@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Play, Square, Eye, EyeOff, Clock, AlertTriangle, Zap, Activity, X } from 'lucide-react';
 import { useSession } from '../context/SessionContext';
-import type { FatigueState } from '../lib/fatigueEngine';
 
 function formatDuration(minutes: number): string {
   const h = Math.floor(minutes / 60);
@@ -30,36 +29,29 @@ function getFatigueRingColor(score: number): string {
 
 export default function DashboardPage() {
   const {
-    state, alerts, sessionSummary, saving, videoRef,
+    state, alerts, sessionSummary, saving, videoRef, isStarting,
     startSession, stopSession, dismissAlert, clearSummary,
   } = useSession();
-  const videoContainerRef = useRef<HTMLDivElement>(null);
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
 
-  // Force re-render when component mounts to ensure UI updates
-  const [, forceUpdate] = useState({});
   useEffect(() => {
-    forceUpdate({});
-  }, []);
+    const preview = previewVideoRef.current;
+    const processingVideo = videoRef.current;
+    if (!preview || !processingVideo) return;
 
-  // Move the persistent video element into this component's container when mounted
-  useEffect(() => {
-    const video = videoRef.current;
-    const container = videoContainerRef.current;
-    if (video && container) {
-      // Clear any existing content to prevent duplicates
-      container.innerHTML = '';
-      video.style.display = '';
-      container.appendChild(video);
+    if (!state.isRunning) {
+      preview.srcObject = null;
+      return;
     }
-    
-    return () => {
-      // When unmounting, hide the video and move it back to body so it's not destroyed
-      if (video && document.body.contains(video)) {
-        video.style.display = 'none';
-        document.body.appendChild(video);
-      }
-    };
-  }, [videoRef]);
+
+    if (preview.srcObject !== processingVideo.srcObject) {
+      preview.srcObject = processingVideo.srcObject;
+    }
+
+    void preview.play().catch(() => {
+      // Playback can fail transiently during route transitions; session processing continues.
+    });
+  }, [state.isRunning, videoRef]);
 
   const circumference = 2 * Math.PI * 54;
   const strokeOffset = circumference - (state.fatigueScore / 100) * circumference;
@@ -75,15 +67,27 @@ export default function DashboardPage() {
         {!state.isRunning ? (
           <button
             onClick={startSession}
-            className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 font-semibold rounded-xl transition-all text-sm"
+            disabled={isStarting}
+            className={`flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 font-semibold rounded-xl transition-all text-sm cursor-pointer ${
+              isStarting ? 'opacity-70 cursor-not-allowed' : ''
+            }`}
           >
-            <Play className="h-4 w-4" />
-            Start Session
+            {isStarting ? (
+              <>
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-slate-950"></div>
+                Starting...
+              </>
+            ) : (
+              <>
+                <Play className="h-4 w-4" />
+                Start Session
+              </>
+            )}
           </button>
         ) : (
           <button
             onClick={stopSession}
-            className="flex items-center gap-2 px-5 py-2.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30 font-semibold rounded-xl transition-all text-sm"
+            className="flex items-center gap-2 px-5 py-2.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30 font-semibold rounded-xl transition-all text-sm cursor-pointer"
           >
             <Square className="h-4 w-4" />
             End Session
@@ -156,7 +160,14 @@ export default function DashboardPage() {
             <h3 className="text-sm font-medium text-slate-400 mb-3 flex items-center gap-2">
               <Eye className="h-4 w-4" /> Camera Feed
             </h3>
-            <div ref={videoContainerRef} className="relative flex-1 min-h-[240px] bg-black/40 rounded-xl overflow-hidden flex items-center justify-center">
+            <div className="relative flex-1 min-h-[240px] bg-black/40 rounded-xl overflow-hidden flex items-center justify-center">
+              <video
+                ref={previewVideoRef}
+                className={`w-full h-full object-cover rounded-xl ${state.isRunning ? 'block' : 'hidden'}`}
+                playsInline
+                muted
+                style={{ transform: 'scaleX(-1)' }}
+              />
               {!state.isRunning && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 rounded-xl z-10">
                   <EyeOff className="h-10 w-10 text-slate-600 mb-3" />

@@ -1,1 +1,17 @@
 @import "tailwindcss";
+
+@layer base {
+  button {
+    @apply cursor-pointer;
+  }
+  
+  a {
+    @apply cursor-pointer;
+  }
+}
+
+@layer utilities {
+  .cursor-pointer-custom {
+    cursor: pointer;
+  }
+}
