@@ -7,6 +7,8 @@ const ACTIVE_SESSION_KEY = 'devwell_active_session';
 
 const defaultState: FatigueState = {
   blinkCount: 0,
+  currentBlinkRate: 0,
+  sessionAvgBlinkRate: 0,
   blinksPerMinute: 0,
   fatigueScore: 0,
   fatigueLevel: 'Fresh',
@@ -47,15 +49,50 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const alertIdRef = useRef(0);
   const restoreAttemptedRef = useRef(false);
+  const audioContextRef = useRef<AudioContext | null>(null);
+
+  const playHighFatigueSound = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return;
+
+    const ctx = audioContextRef.current ?? new AudioCtx();
+    audioContextRef.current = ctx;
+
+    if (ctx.state === 'suspended') {
+      void ctx.resume();
+    }
+
+    const now = ctx.currentTime;
+    const tones = [880, 660, 880];
+    tones.forEach((freq, idx) => {
+      const start = now + idx * 0.18;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.18, start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.14);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.15);
+    });
+  }, []);
 
   const handleAlert = useCallback((type: string, message: string) => {
     const id = ++alertIdRef.current;
     setAlerts(prev => [...prev.slice(-4), { id, type, message }]);
-    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      new Notification('DevWell AI', { body: message });
+    const isFatigueNotification = type === 'fatigue_moderate' || type === 'fatigue_high';
+    if (isFatigueNotification && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      new Notification('DevWell AI Fatigue Alert', { body: message });
+    }
+    if (type === 'fatigue_high') {
+      playHighFatigueSound();
     }
     setTimeout(() => setAlerts(prev => prev.filter(a => a.id !== id)), 8000);
-  }, []);
+  }, [playHighFatigueSound]);
 
   const startSession = useCallback(async () => {
     console.log('Starting session...');

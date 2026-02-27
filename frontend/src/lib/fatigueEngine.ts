@@ -3,6 +3,8 @@
 
 export interface FatigueState {
   blinkCount: number;
+  currentBlinkRate: number;
+  sessionAvgBlinkRate: number;
   blinksPerMinute: number;
   fatigueScore: number;
   fatigueLevel: 'Fresh' | 'Moderate Fatigue' | 'High Fatigue';
@@ -13,7 +15,10 @@ export interface FatigueState {
 }
 
 type FatigueCallback = (state: FatigueState) => void;
-type AlertCallback = (type: 'blink_rate' | 'drowsiness' | 'break', message: string) => void;
+type AlertCallback = (
+  type: 'blink_rate' | 'break' | 'fatigue_moderate' | 'fatigue_high',
+  message: string
+) => void;
 
 // Eye Aspect Ratio calculation using 6 landmark points per eye
 function computeEAR(landmarks: any[], eyeIndices: number[]): number {
@@ -33,12 +38,17 @@ const RIGHT_EYE = [33, 160, 158, 133, 153, 144];
 const DEFAULT_EAR_THRESHOLD = 0.21;
 const MIN_EAR_THRESHOLD = 0.16;
 const MAX_EAR_THRESHOLD = 0.30;
-const EAR_OPEN_FRACTION = 0.74; // Eye-closed threshold as a fraction of calibrated open-eye EAR
-const BLINK_MIN_MS = 90;
-const BLINK_MAX_MS = 500;
-const DROWSINESS_THRESHOLD_MS = 1200;
+const EAR_OPEN_FRACTION = 0.68; // Eye-closed threshold as a fraction of calibrated open-eye EAR
+const BLINK_MIN_MS = 70;
+const DROWSINESS_THRESHOLD_MS = 1500;
+const BLINK_REFRACTORY_MS = 120;
 const LOW_BLINK_RATE = 8;
 const BREAK_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
+const MAX_EYE_ASYMMETRY_RATIO = 1.8;
+const MIN_VALID_EYE_WIDTH = 0.018;
+const UNKNOWN_FRAME_RESET_MS = 2500;
+const FATIGUE_ALERT_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const REOPEN_STABILITY_MS = 180;
 
 export class FatigueEngine {
   private faceMesh: any = null;
@@ -51,18 +61,23 @@ export class FatigueEngine {
   private eyeClosedStart = 0;
   private drowsinessCountedForCurrentClosure = false;
   private longClosureEvents = 0;
-  private blinksPerMinute = 0;
+  private currentBlinkRate = 0;
+  private sessionAvgBlinkRate = 0;
   private blinkHistory: number[] = [];
   private sessionStart = 0;
   private lastBreakAlert = 0;
   private animationFrameId: number | null = null;
   private heartbeatIntervalId: number | null = null;
   private running = false;
-  private lastDrowsinessAlert = 0;
+  private lastFatigueAlertAt = 0;
   private earThreshold = DEFAULT_EAR_THRESHOLD;
   private openEARBaseline = 0;
   private earCalibrationSamples: number[] = [];
   private calibrationStartedAt = 0;
+  private minEARDuringClosure = 1;
+  private unknownStateStartAt = 0;
+  private openStateStartAt = 0;
+  private lastBlinkAt = 0;
 
   constructor(onUpdate: FatigueCallback, onAlert: AlertCallback) {
     this.onFatigueUpdate = onUpdate;
@@ -78,11 +93,18 @@ export class FatigueEngine {
       this.blinkCount = 0;
       this.longClosureEvents = 0;
       this.blinkHistory = [];
+      this.currentBlinkRate = 0;
+      this.sessionAvgBlinkRate = 0;
       this.running = true;
       this.earThreshold = DEFAULT_EAR_THRESHOLD;
       this.openEARBaseline = 0;
       this.earCalibrationSamples = [];
       this.calibrationStartedAt = Date.now();
+      this.minEARDuringClosure = 1;
+      this.unknownStateStartAt = 0;
+      this.openStateStartAt = 0;
+      this.lastBlinkAt = 0;
+      this.lastFatigueAlertAt = 0;
       console.log('Engine state initialized');
 
       // Load FaceMesh via CDN
@@ -190,6 +212,7 @@ export class FatigueEngine {
 
   private processResults(results: any): void {
     if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+      this.handleUnknownTrackingFrame(Date.now());
       this.emitState();
       return;
     }
@@ -200,50 +223,98 @@ export class FatigueEngine {
     const avgEAR = (leftEAR + rightEAR) / 2;
     this.updateEARCalibration(avgEAR);
 
+    const leftEyeWidth = Math.hypot(
+      landmarks[LEFT_EYE[0]].x - landmarks[LEFT_EYE[3]].x,
+      landmarks[LEFT_EYE[0]].y - landmarks[LEFT_EYE[3]].y
+    );
+    const rightEyeWidth = Math.hypot(
+      landmarks[RIGHT_EYE[0]].x - landmarks[RIGHT_EYE[3]].x,
+      landmarks[RIGHT_EYE[0]].y - landmarks[RIGHT_EYE[3]].y
+    );
+    const minEyeWidth = Math.min(leftEyeWidth, rightEyeWidth);
+    const maxEyeWidth = Math.max(leftEyeWidth, rightEyeWidth);
+    const eyeAsymmetryRatio = maxEyeWidth / Math.max(minEyeWidth, 1e-6);
+    const unreliablePose = minEyeWidth < MIN_VALID_EYE_WIDTH || eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO;
+    if (unreliablePose) {
+      this.handleUnknownTrackingFrame(Date.now());
+      this.emitState();
+      return;
+    }
+    this.unknownStateStartAt = 0;
+
     const now = Date.now();
-    const eyesCurrentlyClosed = avgEAR < this.earThreshold;
+    const eyesCurrentlyClosed =
+      avgEAR < this.earThreshold &&
+      Math.max(leftEAR, rightEAR) < this.earThreshold * 1.08;
 
     if (eyesCurrentlyClosed) {
+      this.openStateStartAt = 0;
       if (!this.eyesClosed) {
         this.eyesClosed = true;
         this.eyeClosedStart = now;
         this.drowsinessCountedForCurrentClosure = false;
+        this.minEARDuringClosure = avgEAR;
+      } else {
+        this.minEARDuringClosure = Math.min(this.minEARDuringClosure, avgEAR);
       }
 
       // Drowsiness detection
       const closedDuration = now - this.eyeClosedStart;
       if (
         closedDuration >= DROWSINESS_THRESHOLD_MS &&
-        !this.drowsinessCountedForCurrentClosure &&
-        now - this.lastDrowsinessAlert > 5000
+        !this.drowsinessCountedForCurrentClosure
       ) {
         this.longClosureEvents++;
         this.drowsinessCountedForCurrentClosure = true;
-        this.lastDrowsinessAlert = now;
-        this.onAlert('drowsiness', 'Drowsiness detected! Your eyes have been closed for an extended period.');
       }
     } else {
       // Classify a completed eye-closure event by duration.
       if (this.eyesClosed) {
-        const closureDuration = now - this.eyeClosedStart;
-        if (closureDuration >= BLINK_MIN_MS && closureDuration <= BLINK_MAX_MS) {
+        if (this.openStateStartAt === 0) {
+          this.openStateStartAt = now;
+        }
+
+        // Ignore short noisy reopen spikes to avoid splitting one long closure into many blinks.
+        if (now - this.openStateStartAt < REOPEN_STABILITY_MS) {
+          this.emitState();
+          return;
+        }
+
+        const closureDuration = this.openStateStartAt - this.eyeClosedStart;
+        if (closureDuration >= DROWSINESS_THRESHOLD_MS) {
+          // Long closures are drowsiness events and must never be counted as blinks.
+          if (!this.drowsinessCountedForCurrentClosure) {
+            this.longClosureEvents++;
+            this.drowsinessCountedForCurrentClosure = true;
+          }
+        } else if (
+          closureDuration >= BLINK_MIN_MS &&
+          closureDuration < DROWSINESS_THRESHOLD_MS &&
+          now - this.lastBlinkAt >= BLINK_REFRACTORY_MS
+        ) {
           this.blinkCount++;
           this.blinkHistory.push(now);
+          this.lastBlinkAt = now;
         }
-        this.eyeClosedStart = 0;
-        this.drowsinessCountedForCurrentClosure = false;
+        this.resetClosureTracking();
       }
       this.eyesClosed = false;
     }
 
-    // Calculate blinks per minute (rolling 60s window)
+    // Current blink rate: rolling last 60 seconds.
+    const sessionMinutes = (now - this.sessionStart) / 60000;
     const oneMinuteAgo = now - 60000;
     this.blinkHistory = this.blinkHistory.filter(t => t > oneMinuteAgo);
-    this.blinksPerMinute = this.blinkHistory.length;
+    this.currentBlinkRate = this.blinkHistory.length;
+
+    // Session average blink rate: smoothed denominator in first minute to avoid spikes.
+    const normalizedMinutes = Math.max(sessionMinutes, 1);
+    this.sessionAvgBlinkRate = sessionMinutes > 0
+      ? Math.round(this.blinkCount / normalizedMinutes)
+      : 0;
 
     // Low blink rate alert
-    const sessionMinutes = (now - this.sessionStart) / 60000;
-    if (sessionMinutes > 1 && this.blinksPerMinute < LOW_BLINK_RATE && this.blinksPerMinute > 0) {
+    if (sessionMinutes > 1 && this.currentBlinkRate < LOW_BLINK_RATE && this.currentBlinkRate > 0) {
       // Only alert once per minute
     }
 
@@ -278,23 +349,71 @@ export class FatigueEngine {
     this.earThreshold = Math.min(MAX_EAR_THRESHOLD, Math.max(MIN_EAR_THRESHOLD, candidateThreshold));
   }
 
+  private resetClosureTracking(): void {
+    this.eyesClosed = false;
+    this.eyeClosedStart = 0;
+    this.drowsinessCountedForCurrentClosure = false;
+    this.minEARDuringClosure = 1;
+    this.openStateStartAt = 0;
+  }
+
+  private handleUnknownTrackingFrame(now: number): void {
+    if (!this.eyesClosed) return;
+
+    if (this.unknownStateStartAt === 0) {
+      this.unknownStateStartAt = now;
+    }
+
+    const closedDuration = now - this.eyeClosedStart;
+    if (
+      closedDuration >= DROWSINESS_THRESHOLD_MS &&
+      !this.drowsinessCountedForCurrentClosure
+    ) {
+      this.longClosureEvents++;
+      this.drowsinessCountedForCurrentClosure = true;
+    }
+
+    if (now - this.unknownStateStartAt >= UNKNOWN_FRAME_RESET_MS) {
+      // Stop stale closed-state if tracking is lost for too long.
+      this.resetClosureTracking();
+      this.unknownStateStartAt = 0;
+    }
+  }
+
   private emitState(): void {
     const now = Date.now();
     const sessionMinutes = (now - this.sessionStart) / 60000;
 
     // Fatigue score calculation (0-100)
-    const blinkDeficit = Math.max(0, (LOW_BLINK_RATE - this.blinksPerMinute) / LOW_BLINK_RATE) * 35;
-    const closurePenalty = Math.min(this.longClosureEvents * 10, 30);
-    const durationPenalty = Math.min(sessionMinutes / 180 * 35, 35);
+    const blinkDeficit = sessionMinutes < 1
+      ? 0
+      : Math.max(0, (LOW_BLINK_RATE - this.currentBlinkRate) / LOW_BLINK_RATE) * 35;
+    const closurePenalty = Math.min(this.longClosureEvents * 12, 36);
+    // Let fatigue grow gradually with session duration after a short grace period.
+    const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 40, 40);
     const fatigueScore = Math.min(100, Math.max(0, blinkDeficit + closurePenalty + durationPenalty));
 
     let fatigueLevel: FatigueState['fatigueLevel'] = 'Fresh';
     if (fatigueScore > 70) fatigueLevel = 'High Fatigue';
     else if (fatigueScore > 40) fatigueLevel = 'Moderate Fatigue';
 
+    if (
+      (fatigueLevel === 'Moderate Fatigue' || fatigueLevel === 'High Fatigue') &&
+      (this.lastFatigueAlertAt === 0 || now - this.lastFatigueAlertAt >= FATIGUE_ALERT_INTERVAL_MS)
+    ) {
+      this.lastFatigueAlertAt = now;
+      if (fatigueLevel === 'High Fatigue') {
+        this.onAlert('fatigue_high', 'High fatigue detected. Please take an immediate break.');
+      } else {
+        this.onAlert('fatigue_moderate', 'Moderate fatigue detected. Consider taking a short break.');
+      }
+    }
+
     this.onFatigueUpdate({
       blinkCount: this.blinkCount,
-      blinksPerMinute: this.blinksPerMinute,
+      currentBlinkRate: this.currentBlinkRate,
+      sessionAvgBlinkRate: this.sessionAvgBlinkRate,
+      blinksPerMinute: this.sessionAvgBlinkRate,
       fatigueScore: Math.round(fatigueScore),
       fatigueLevel,
       longClosureEvents: this.longClosureEvents,
@@ -326,9 +445,11 @@ export class FatigueEngine {
     }
 
     const sessionMinutes = (Date.now() - this.sessionStart) / 60000;
-    const blinkDeficit = Math.max(0, (LOW_BLINK_RATE - this.blinksPerMinute) / LOW_BLINK_RATE) * 35;
-    const closurePenalty = Math.min(this.longClosureEvents * 10, 30);
-    const durationPenalty = Math.min(sessionMinutes / 180 * 35, 35);
+    const blinkDeficit = sessionMinutes < 1
+      ? 0
+      : Math.max(0, (LOW_BLINK_RATE - this.currentBlinkRate) / LOW_BLINK_RATE) * 35;
+    const closurePenalty = Math.min(this.longClosureEvents * 12, 36);
+    const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 40, 40);
     const fatigueScore = Math.min(100, Math.max(0, blinkDeficit + closurePenalty + durationPenalty));
 
     let fatigueLevel: FatigueState['fatigueLevel'] = 'Fresh';
@@ -337,7 +458,9 @@ export class FatigueEngine {
 
     return {
       blinkCount: this.blinkCount,
-      blinksPerMinute: this.blinksPerMinute,
+      currentBlinkRate: this.currentBlinkRate,
+      sessionAvgBlinkRate: sessionMinutes > 0 ? Math.round(this.blinkCount / sessionMinutes) : 0,
+      blinksPerMinute: sessionMinutes > 0 ? Math.round(this.blinkCount / sessionMinutes) : 0,
       fatigueScore: Math.round(fatigueScore),
       fatigueLevel,
       longClosureEvents: this.longClosureEvents,

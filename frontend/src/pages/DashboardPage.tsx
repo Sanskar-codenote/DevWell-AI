@@ -102,9 +102,9 @@ export default function DashboardPage() {
             <div
               key={alert.id}
               className={`flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium animate-pulse ${
-                alert.type === 'drowsiness'
+                alert.type === 'fatigue_high'
                   ? 'bg-red-500/10 border border-red-500/20 text-red-400'
-                  : alert.type === 'break'
+                  : alert.type === 'fatigue_moderate' || alert.type === 'break'
                   ? 'bg-amber-500/10 border border-amber-500/20 text-amber-400'
                   : 'bg-blue-500/10 border border-blue-500/20 text-blue-400'
               }`}
@@ -230,25 +230,37 @@ export default function DashboardPage() {
             </p>
           </div>
 
-          {/* Blink Rate */}
+          {/* Blink Rates */}
           <div className="bg-slate-900/60 border border-white/5 rounded-2xl p-5">
             <div className="flex items-center gap-2 text-slate-400 mb-3">
               <Eye className="h-4 w-4" />
-              <span className="text-sm font-medium">Blink Rate</span>
+              <span className="text-sm font-medium">Blink Rates</span>
             </div>
-            <div className="flex items-baseline gap-2">
-              <p className={`text-2xl font-bold ${state.blinksPerMinute < 8 && state.isRunning ? 'text-red-400' : 'text-white'}`}>
-                {state.blinksPerMinute}
-              </p>
-              <span className="text-sm text-slate-500">/ min</span>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">Current (60s)</p>
+                <div className="flex items-baseline gap-1.5">
+                  <p className={`text-xl font-bold ${state.currentBlinkRate < 8 && state.isRunning ? 'text-red-400' : 'text-white'}`}>
+                    {state.currentBlinkRate}
+                  </p>
+                  <span className="text-xs text-slate-500">/min</span>
+                </div>
+              </div>
+              <div>
+                <p className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">Session Avg</p>
+                <div className="flex items-baseline gap-1.5">
+                  <p className="text-xl font-bold text-white">{state.sessionAvgBlinkRate}</p>
+                  <span className="text-xs text-slate-500">/min</span>
+                </div>
+              </div>
             </div>
             <div className="mt-2 h-1.5 bg-white/5 rounded-full overflow-hidden">
               <div
                 className={`h-full rounded-full transition-all duration-300 ${
-                  state.blinksPerMinute >= 15 ? 'bg-emerald-400' :
-                  state.blinksPerMinute >= 8 ? 'bg-amber-400' : 'bg-red-400'
+                  state.currentBlinkRate >= 15 ? 'bg-emerald-400' :
+                  state.currentBlinkRate >= 8 ? 'bg-amber-400' : 'bg-red-400'
                 }`}
-                style={{ width: `${Math.min(100, (state.blinksPerMinute / 20) * 100)}%` }}
+                style={{ width: `${Math.min(100, (state.currentBlinkRate / 20) * 100)}%` }}
               />
             </div>
             <p className="text-xs text-slate-500 mt-1.5">Normal: 15-20/min</p>
