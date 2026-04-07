@@ -39,16 +39,16 @@ const DEFAULT_EAR_THRESHOLD = 0.21;
 const MIN_EAR_THRESHOLD = 0.16;
 const MAX_EAR_THRESHOLD = 0.30;
 const EAR_OPEN_FRACTION = 0.68; // Eye-closed threshold as a fraction of calibrated open-eye EAR
-const BLINK_MIN_MS = 70;
+const BLINK_MIN_MS = 50;
 const DROWSINESS_THRESHOLD_MS = 1500;
-const BLINK_REFRACTORY_MS = 120;
+const BLINK_REFRACTORY_MS = 80;
 const LOW_BLINK_RATE = 8;
 const BREAK_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
 const MAX_EYE_ASYMMETRY_RATIO = 1.8;
 const MIN_VALID_EYE_WIDTH = 0.018;
 const UNKNOWN_FRAME_RESET_MS = 2500;
 const FATIGUE_ALERT_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
-const REOPEN_STABILITY_MS = 180;
+const REOPEN_STABILITY_MS = 90;
 
 export class FatigueEngine {
   private faceMesh: any = null;
@@ -247,13 +247,20 @@ export class FatigueEngine {
       avgEAR < this.earThreshold &&
       Math.max(leftEAR, rightEAR) < this.earThreshold * 1.08;
 
+    // Log EAR values every 100 frames to help debug
+    if (this.blinkCount % 10 === 0 || !this.eyesClosed !== !eyesCurrentlyClosed) {
+      console.log(`[EAR] Left: ${leftEAR.toFixed(3)}, Right: ${rightEAR.toFixed(3)}, Avg: ${avgEAR.toFixed(3)}, Threshold: ${this.earThreshold.toFixed(3)}, Closed: ${eyesCurrentlyClosed}`);
+    }
+
     if (eyesCurrentlyClosed) {
       this.openStateStartAt = 0;
       if (!this.eyesClosed) {
+        // Eyes just closed
         this.eyesClosed = true;
         this.eyeClosedStart = now;
         this.drowsinessCountedForCurrentClosure = false;
         this.minEARDuringClosure = avgEAR;
+        console.log(`[Eye] Closed - EAR: ${avgEAR.toFixed(3)}, Threshold: ${this.earThreshold.toFixed(3)}`);
       } else {
         this.minEARDuringClosure = Math.min(this.minEARDuringClosure, avgEAR);
       }
@@ -268,35 +275,50 @@ export class FatigueEngine {
         this.drowsinessCountedForCurrentClosure = true;
       }
     } else {
-      // Classify a completed eye-closure event by duration.
+      // Eyes are currently open
       if (this.eyesClosed) {
+        // We were previously closed, track when eyes opened
         if (this.openStateStartAt === 0) {
           this.openStateStartAt = now;
         }
 
-        // Ignore short noisy reopen spikes to avoid splitting one long closure into many blinks.
-        if (now - this.openStateStartAt < REOPEN_STABILITY_MS) {
+        // Wait for reopen stability before classifying the closure event
+        const timeSinceOpen = now - this.openStateStartAt;
+        if (timeSinceOpen < REOPEN_STABILITY_MS) {
+          // Still waiting for stability, just emit state and continue tracking
           this.emitState();
           return;
         }
 
-        const closureDuration = this.openStateStartAt - this.eyeClosedStart;
+        // Stability period passed, classify the closure event
+        // Use 'now' to get the actual total closure duration
+        const closureDuration = now - this.eyeClosedStart;
+        console.log(`[Blink] Classifying closure: ${closureDuration}ms (threshold: ${BLINK_MIN_MS}-${DROWSINESS_THRESHOLD_MS}ms)`);
+        
         if (closureDuration >= DROWSINESS_THRESHOLD_MS) {
           // Long closures are drowsiness events and must never be counted as blinks.
           if (!this.drowsinessCountedForCurrentClosure) {
             this.longClosureEvents++;
             this.drowsinessCountedForCurrentClosure = true;
+            console.log(`[Drowsy] Long closure detected: ${closureDuration}ms`);
           }
         } else if (
           closureDuration >= BLINK_MIN_MS &&
           closureDuration < DROWSINESS_THRESHOLD_MS &&
           now - this.lastBlinkAt >= BLINK_REFRACTORY_MS
         ) {
+          // Valid blink detected
           this.blinkCount++;
           this.blinkHistory.push(now);
           this.lastBlinkAt = now;
+          console.log(`[Blink] ✓ Detected! Count: ${this.blinkCount}, Duration: ${closureDuration}ms`);
+        } else {
+          console.log(`[Blink] ✗ Not counted - Duration: ${closureDuration}ms, Since last blink: ${now - this.lastBlinkAt}ms`);
         }
+        
+        // Reset closure tracking after classification
         this.resetClosureTracking();
+        console.log(`[Eye] Opened - Closure classified after ${timeSinceOpen}ms stability`);
       }
       this.eyesClosed = false;
     }
@@ -335,6 +357,11 @@ export class FatigueEngine {
       const p80 = sorted[Math.min(idx, sorted.length - 1)];
       if (p80 > 0) {
         this.openEARBaseline = p80;
+      }
+      
+      // Log calibration progress
+      if (this.earCalibrationSamples.length % 10 === 0) {
+        console.log(`[Calibration] Samples: ${this.earCalibrationSamples.length}, Baseline: ${this.openEARBaseline.toFixed(3)}, Threshold: ${this.earThreshold.toFixed(3)}`);
       }
     } else if (!this.eyesClosed && avgEAR > this.earThreshold) {
       // Adapt baseline gradually to lighting/angle changes while eyes are likely open.
