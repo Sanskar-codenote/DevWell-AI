@@ -84,15 +84,36 @@ export class FatigueEngine {
     this.onAlert = onAlert;
   }
 
-  async start(videoElement: HTMLVideoElement): Promise<void> {
+  async start(videoElement: HTMLVideoElement, restoredData?: any): Promise<void> {
     console.log('FatigueEngine.start() called with video element:', videoElement);
     try {
       this.videoElement = videoElement;
-      this.sessionStart = Date.now();
-      this.lastBreakAlert = Date.now();
-      this.blinkCount = 0;
-      this.longClosureEvents = 0;
-      this.blinkHistory = [];
+      
+      // Check if we have restored session data
+      if (restoredData) {
+        console.log('[Engine] Restoring session from saved data:', restoredData);
+        
+        // Restore the session start time by calculating backwards from when it was saved
+        // This preserves the actual elapsed time
+        const savedDuration = restoredData.durationAtSave || 0;
+        const savedAt = restoredData.savedAt || Date.now();
+        this.sessionStart = savedAt - (savedDuration * 60000);
+        
+        this.blinkCount = restoredData.blinkCount || 0;
+        this.longClosureEvents = restoredData.longClosureEvents || 0;
+        this.blinkHistory = restoredData.blinkHistory || [];
+        this.lastBreakAlert = Date.now();
+        
+        console.log(`[Engine] Restored session: ${savedDuration.toFixed(1)}min duration, ${this.blinkCount} blinks`);
+      } else {
+        // Fresh session
+        this.sessionStart = Date.now();
+        this.lastBreakAlert = Date.now();
+        this.blinkCount = 0;
+        this.longClosureEvents = 0;
+        this.blinkHistory = [];
+      }
+      
       this.currentBlinkRate = 0;
       this.sessionAvgBlinkRate = 0;
       this.running = true;

@@ -4,6 +4,7 @@ import type { FatigueState } from '../lib/fatigueEngine';
 import api from '../lib/api';
 
 const ACTIVE_SESSION_KEY = 'devwell_active_session';
+const SESSION_DATA_KEY = 'devwell_session_data';
 
 const defaultState: FatigueState = {
   blinkCount: 0,
@@ -95,10 +96,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [playHighFatigueSound]);
 
   const startSession = useCallback(async () => {
-    console.log('Starting session...');
+    console.log('[Session] Starting session...');
     setSessionSummary(null);
     setAlerts([]);
     setIsStarting(true);
+    
+    // Check for saved session data to restore
+    let restoredSessionData = null;
+    const savedSessionData = sessionStorage.getItem(SESSION_DATA_KEY);
+    console.log('[Session] Checking for saved data...', savedSessionData ? 'FOUND' : 'NOT FOUND');
+    
+    if (savedSessionData) {
+      try {
+        restoredSessionData = JSON.parse(savedSessionData);
+        console.log('[Session] Parsed saved session data:', restoredSessionData);
+      } catch (e) {
+        console.error('[Session] Failed to parse saved session data:', e);
+      }
+    }
     
     // Add timeout to prevent hanging
     const timeoutId = setTimeout(() => {
@@ -127,9 +142,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const engine = new FatigueEngine(setState, handleAlert);
       engineRef.current = engine;
       console.log('Starting engine with video element...');
-      await engine.start(videoRef.current);
+      await engine.start(videoRef.current, restoredSessionData);
       console.log('Engine started successfully');
+      
+      // Mark session as active
       sessionStorage.setItem(ACTIVE_SESSION_KEY, '1');
+      
+      // Clear saved session data after successful restore
+      if (restoredSessionData) {
+        sessionStorage.removeItem(SESSION_DATA_KEY);
+        console.log('[Session] Cleared saved session data after restore');
+      }
+      
       clearTimeout(timeoutId);
       setIsStarting(false);
     } catch (err: any) {
@@ -146,7 +170,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (!engineRef.current) return;
     const summary = engineRef.current.stop();
     engineRef.current = null;
+    
+    // Clear session flags and saved data
     sessionStorage.removeItem(ACTIVE_SESSION_KEY);
+    sessionStorage.removeItem(SESSION_DATA_KEY);
+    
     setState(defaultState);
     setSessionSummary(summary);
     setIsStarting(false);
@@ -170,28 +198,100 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // Cleanup effect to ensure proper cleanup when component unmounts
   useEffect(() => {
     return () => {
-      if (engineRef.current) {
-        engineRef.current.stop();
-        engineRef.current = null;
-      }
-      sessionStorage.removeItem(ACTIVE_SESSION_KEY);
+      // Don't clear session on refresh/close - let it persist for restoration
+      // Only clear when explicitly stopping the session
     };
   }, []);
+
+  // Warn user before closing/refreshing during active session AND save data immediately
+  useEffect(() => {
+    if (!state.isRunning) return;
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      // Save current session state immediately before unload
+      const sessionData = {
+        blinkCount: state.blinkCount,
+        longClosureEvents: state.longClosureEvents,
+        blinkHistory: [],
+        savedAt: Date.now(),
+        durationAtSave: state.sessionDurationMinutes,
+      };
+      sessionStorage.setItem(SESSION_DATA_KEY, JSON.stringify(sessionData));
+      console.log(`[Session] Saved state before unload: ${state.blinkCount} blinks, ${state.sessionDurationMinutes.toFixed(1)}min`);
+      
+      // Show browser warning
+      e.preventDefault();
+      e.returnValue = 'You have an active session. Your progress will be saved and restored when you return.';
+      return e.returnValue;
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [state.isRunning, state.blinkCount, state.longClosureEvents, state.sessionDurationMinutes]);
 
   // Restore active session on refresh within the same tab.
   useEffect(() => {
     if (restoreAttemptedRef.current) return;
     restoreAttemptedRef.current = true;
 
-    if (sessionStorage.getItem(ACTIVE_SESSION_KEY) !== '1') return;
+    const hasActiveSession = sessionStorage.getItem(ACTIVE_SESSION_KEY) === '1';
+    const hasSessionData = sessionStorage.getItem(SESSION_DATA_KEY);
+    
+    console.log('[Session] === Restoration Check ===');
+    console.log('[Session] hasActiveSession:', hasActiveSession);
+    console.log('[Session] hasSessionData:', hasSessionData);
+    
+    if (!hasActiveSession && !hasSessionData) {
+      console.log('[Session] No active session to restore');
+      return;
+    }
+    
+    if (hasSessionData) {
+      try {
+        const parsedData = JSON.parse(hasSessionData);
+        console.log('[Session] Saved data details:', parsedData);
+      } catch (e) {
+        console.error('[Session] Failed to parse saved data:', e);
+      }
+    }
+    
+    console.log('[Session] Detected active session, attempting to restore...');
+    
+    // Show a brief message that session is being restored
+    if (hasSessionData) {
+      handleAlert('info', 'Restoring your previous session...');
+    }
+    
     void startSession();
-  }, [startSession]);
+  }, [startSession, handleAlert]);
 
   const dismissAlert = useCallback((id: number) => {
     setAlerts(prev => prev.filter(a => a.id !== id));
   }, []);
 
   const clearSummary = useCallback(() => setSessionSummary(null), []);
+
+  // Periodically save session data to sessionStorage for recovery
+  useEffect(() => {
+    if (!state.isRunning) return;
+
+    const saveInterval = setInterval(() => {
+      const sessionData = {
+        blinkCount: state.blinkCount,
+        longClosureEvents: state.longClosureEvents,
+        blinkHistory: [], // We'll recalculate this on restore
+        // Store the actual session start time (engine tracks this internally)
+        // We need to get this from the engine, but for now we'll calculate it
+        // This will be accurate enough for restoration purposes
+        savedAt: Date.now(),
+        durationAtSave: state.sessionDurationMinutes,
+      };
+      sessionStorage.setItem(SESSION_DATA_KEY, JSON.stringify(sessionData));
+      console.log(`[Session] Auto-saved: ${state.blinkCount} blinks, ${state.sessionDurationMinutes.toFixed(1)}min`);
+    }, 5000); // Save every 5 seconds
+
+    return () => clearInterval(saveInterval);
+  }, [state.isRunning, state.blinkCount, state.longClosureEvents, state.sessionDurationMinutes]);
 
   return (
     <SessionContext.Provider value={{

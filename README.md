@@ -2,256 +2,702 @@
 
 Real-time developer wellness monitoring app with webcam-based fatigue detection, session tracking, and analytics.
 
-## Project Structure
+> **Privacy-First**: All facial processing happens client-side. No video, images, or facial landmarks are ever sent to the server.
 
-- `frontend/` — React + TypeScript + Vite + Tailwind UI
-- `backend/` — Express + PostgreSQL API
-- `prd.md` — product requirement notes
+## 🌟 Features
 
-## Tech Stack
+- 🔐 **JWT Authentication** - Secure user registration and login
+- 👁️ **Real-Time Fatigue Detection** - MediaPipe FaceMesh tracks eye aspects ratio (EAR) for blink detection
+- ⏱️ **Session Management** - Track work sessions with automatic persistence and recovery
+- 📊 **Analytics Dashboard** - Weekly and monthly fatigue trends with burnout risk assessment
+- 🔔 **Smart Alerts** - Notifications for moderate/high fatigue with sound alerts
+- 💾 **Session Recovery** - Auto-saves every 5 seconds, restores on browser refresh/crash
+- 🎨 **Modern UI** - Dark theme with Tailwind CSS v4
+
+## 📁 Project Structure
+
+```
+DevWell/
+├── frontend/                 # React + TypeScript + Vite
+│   ├── src/
+│   │   ├── components/      # Reusable UI components
+│   │   │   ├── ErrorBoundary.tsx
+│   │   │   ├── ProtectedLayout.tsx
+│   │   │   └── Sidebar.tsx
+│   │   ├── context/         # React Context providers
+│   │   │   ├── AuthContext.tsx      # Authentication state
+│   │   │   └── SessionContext.tsx   # Session management
+│   │   ├── lib/
+│   │   │   ├── api.ts               # Axios API client
+│   │   │   └── fatigueEngine.ts     # Core fatigue detection engine
+│   │   ├── pages/
+│   │   │   ├── AnalyticsPage.tsx
+│   │   │   ├── DashboardPage.tsx
+│   │   │   ├── LoginPage.tsx
+│   │   │   └── RegisterPage.tsx
+│   │   ├── App.tsx
+│   │   └── main.tsx
+│   └── package.json
+├── backend/                 # Express + PostgreSQL API
+│   ├── routes/
+│   │   ├── auth.js          # Registration and login
+│   │   ├── sessions.js      # Session CRUD operations
+│   │   └── analytics.js     # Weekly/monthly analytics
+│   ├── middleware/
+│   │   └── auth.js          # JWT authentication middleware
+│   ├── db.js                # Database initialization and pool
+│   ├── server.js            # Express app entry point
+│   ├── seed.js              # Demo data seeder
+│   └── package.json
+├── prd.md                   # Product requirements document
+└── README.md
+```
+
+## 🛠️ Tech Stack
 
 ### Frontend
 
-- React 19
-- TypeScript
-- Vite
-- Tailwind CSS v4
-- React Router
-- Axios
-- Recharts
-- Lucide icons
-- MediaPipe FaceMesh (client-side eye landmark detection)
+- **React 19** - UI library with hooks
+- **TypeScript** - Type-safe development
+- **Vite 7** - Fast build tool and dev server
+- **Tailwind CSS v4** - Utility-first CSS framework
+- **React Router 7** - Client-side routing
+- **Axios** - HTTP client for API calls
+- **Recharts 3** - Charting library for analytics
+- **Lucide React** - Icon library
+- **MediaPipe FaceMesh** - Client-side facial landmark detection
 
 ### Backend
 
-- Node.js + Express 5
-- PostgreSQL (`pg`)
-- JWT authentication (`jsonwebtoken`)
-- Password hashing (`bcryptjs`)
-- CORS and rate limiting (`cors`, `express-rate-limit`)
+- **Node.js + Express 5** - REST API framework
+- **PostgreSQL (pg)** - Relational database
+- **JWT (jsonwebtoken)** - Token-based authentication
+- **bcryptjs** - Password hashing
+- **CORS** - Cross-origin resource sharing
+- **express-rate-limit** - API rate limiting
+- **dotenv** - Environment variable management
 
-## Working Flow
+## 🔄 Application Flow
 
-1. User registers/logs in.
-2. JWT token is stored in `localStorage` (`devwell_token`).
-3. User starts a monitoring session from Dashboard.
-4. Frontend opens webcam and runs MediaPipe FaceMesh in browser.
-5. Eye landmarks are converted to EAR (Eye Aspect Ratio) and classified into:
-   - blink events
-   - long closure events (drowsy events)
-6. Real-time state is shown on Dashboard.
-7. When session ends, summary is posted to backend (`/api/v1/sessions`).
-8. Analytics tab loads weekly/monthly aggregates from backend.
+### User Journey
 
-## Tabs and What They Show
+1. **Authentication** - User registers or logs in with email/password
+2. **Token Storage** - JWT token stored in `localStorage` as `devwell_token`
+3. **Start Session** - User clicks "Start Session" on Dashboard
+4. **Camera Activation** - Browser requests camera permission
+5. **FaceMesh Initialization** - MediaPipe loads and begins facial landmark detection
+6. **Real-Time Monitoring**:
+   - Eye landmarks extracted and EAR (Eye Aspect Ratio) calculated
+   - Blink events detected and counted
+   - Long closure events (drowsiness) tracked
+   - Fatigue score computed continuously
+7. **Live Dashboard** - Metrics updated in real-time
+8. **Session Persistence** - Auto-saves every 5 seconds to sessionStorage
+9. **End Session** - Summary posted to backend (`POST /api/v1/sessions`)
+10. **Analytics** - Weekly/monthly aggregates loaded from backend
 
-## Dashboard Tab
+### Fatigue Detection Algorithm
 
-### Session controls
+The `FatigueEngine` class (`frontend/src/lib/fatigueEngine.ts`) implements:
 
-- **Start Session**: initializes webcam + detection engine.
-- **End Session**: stops detection and saves summary to backend.
+1. **EAR Calculation** - Eye Aspect Ratio from 6 landmarks per eye
+   - Left eye: `[362, 385, 387, 263, 373, 380]`
+   - Right eye: `[33, 160, 158, 133, 153, 144]`
+   
+2. **Adaptive Thresholding** - Calibrates to user's eye geometry
+   - 5-second initial calibration period
+   - Continuous adaptation to lighting/angle changes
+   - Threshold range: 0.16 - 0.30
 
-### Camera + Eye status
+3. **Blink Detection** - Classifies eye closures by duration:
+   - **Blink**: 50ms - 1500ms closure
+   - **Drowsy Event**: >1500ms closure
+   - Refractory period: 80ms between blinks
+   - Reopen stability: 90ms to filter noise
 
-- Live camera feed (mirrored).
-- `Eye Status` shows `Open`/`Closed` based on EAR thresholding.
+4. **Fatigue Score (0-100)** - Three-component penalty system:
+   - **Blink Deficit** (0-35 pts): Low blink rate vs threshold (<8/min)
+   - **Closure Penalty** (0-36 pts): Long closure events (12 pts each)
+   - **Duration Penalty** (0-40 pts): Gradual increase after 3 min grace period
 
-### Live metrics
+5. **Fatigue Levels**:
+   - `Fresh`: 0-40
+   - `Moderate Fatigue`: 41-70
+   - `High Fatigue`: 71-100
 
-- **Session Time**: elapsed session duration.
-- **Current Blink Rate (60s)**: blinks counted in the most recent 60 seconds.
-- **Session Avg Rate**: `total_blinks / session_minutes` (smoothed in first minute for stable UI).
-- **Total Blinks**: cumulative blink count in current session.
-- **Drowsy Events**: count of long eye-closure events.
-- **Fatigue Score (0-100)** + fatigue level badge:
-  - `Fresh`
-  - `Moderate Fatigue`
-  - `High Fatigue`
+## 📱 Pages and Features
 
-### Fatigue score calculation (frontend engine)
+### 🏠 Dashboard Tab
 
-Fatigue score combines three penalties:
+#### Session Controls
 
-- **Blink deficit penalty**: based on low current blink rate vs threshold.
-- **Closure penalty**: based on long closure (drowsy) events.
-- **Duration penalty**: increases gradually as session duration grows.
+- **Start Session**: Initializes webcam + FaceMesh detection engine
+- **End Session**: Stops detection, generates summary, saves to backend
 
-Final score is clamped to `0..100` and mapped to level:
+#### Camera Feed
 
-- `<= 40`: Fresh
-- `41..70`: Moderate Fatigue
-- `> 70`: High Fatigue
+- Live webcam preview (mirrored)
+- `LIVE` indicator with pulse animation when active
+- `Eye Status` badge shows `Open`/`Closed` based on EAR thresholding
 
-### Alerts/notifications behavior
+#### Real-Time Metrics
 
-- Closure-based popup notifications are disabled.
-- Fatigue notifications are sent when level reaches:
-  - `Moderate Fatigue`
-  - `High Fatigue`
-- Alert interval is throttled to once per **1 hour**.
-- `High Fatigue` notification includes sound alert.
+| Metric | Description |
+|--------|-------------|  
+| **Session Time** | Elapsed duration (MM:SS format) |
+| **Current Blink Rate (60s)** | Blinks in the most recent 60-second window |
+| **Session Avg Rate** | `total_blinks / session_minutes` (smoothed in first minute) |
+| **Total Blinks** | Cumulative blink count in current session |
+| **Drowsy Events** | Count of long eye-closure events (>1.5s) |
+| **Fatigue Score** | 0-100 score with circular progress indicator |
+| **Fatigue Level** | Badge: `Fresh`, `Moderate Fatigue`, or `High Fatigue` |
 
-## Analytics Tab
+#### Alerts & Notifications
 
-Data comes from backend endpoints:
+- **In-App Alerts**: Toast notifications for fatigue detection
+- **Browser Notifications**: System-level notifications (if permitted)
+- **Sound Alert**: Audio warning on `High Fatigue` detection
+- **Throttling**: Fatigue alerts limited to once per **1 hour**
+- **Break Reminders**: 20-20-20 rule reminder every 20 minutes
 
-- `GET /api/v1/analytics/weekly`
-- `GET /api/v1/analytics/monthly`
-- `GET /api/v1/sessions?limit=50`
+#### Session Persistence & Recovery
 
-### Weekly view
+The app automatically saves session data every **5 seconds** to `sessionStorage`:
 
-Shows:
+- ✅ Blink count
+- ✅ Long closure events
+- ✅ Session start time
+- ✅ Session duration
 
-- Average fatigue score
-- Fatigue change vs previous week
+**Recovery Scenarios:**
+
+| Scenario | Behavior |
+|----------|----------|
+| **Browser Refresh (F5)** | Session fully restored with all metrics |
+| **Accidental Tab Close** | Warning popup + session saved for recovery |
+| **Browser Crash** | Session auto-saved, minimal data loss |
+| **Navigation Away** | Warning before leaving during active session |
+
+**Restoration Process:**
+1. On page load, checks for `devwell_active_session` flag
+2. Loads saved session data from `devwell_session_data`
+3. Restores engine state (blink count, timing, etc.)
+4. Shows "Restoring your previous session..." message
+5. Continues session seamlessly
+
+**Security - Cross-User Data Protection:**
+
+Session data is automatically cleared to prevent data leakage between users:
+
+- ✅ **On Logout**: All session data cleared from sessionStorage
+- ✅ **On Login**: Stale session data from previous user cleared
+- ✅ **On Registration**: Fresh start with no session data
+- ✅ **On Token Expiry**: Invalid sessions cleared automatically
+
+This ensures users never see another user's session metrics.
+
+### 📈 Analytics Tab
+
+Data loaded from backend endpoints:
+
+- `GET /api/v1/analytics/weekly` - Current week metrics
+- `GET /api/v1/analytics/monthly` - Last 4 weeks trend
+- `GET /api/v1/sessions?limit=50` - Session history
+
+#### Weekly View
+
+Displays:
+
+- **Average Fatigue Score** - Mean score for the week
+- **Fatigue Change** - Comparison vs previous week (↑/↓)
+- **Average Blink Rate** - Weekly average blinks per minute
+- **Longest Session** - Maximum session duration
+- **Daily Charts**:
+  - Fatigue score line chart
+  - Blink rate line chart
+
+#### Monthly View
+
+Displays:
+
+- **Weekly Trend** - Last 4 weeks fatigue progression
+- **High Fatigue Days** - Count of days with score > 70
+- **Burnout Risk** - Calculated as `LOW`/`MEDIUM`/`HIGH` based on:
+  - Consecutive weekly fatigue increases (3+ weeks = HIGH)
+  - Average session duration (>240 min = HIGH)
+  - Break frequency below threshold
+- **Daily Breakdown** - Calendar view of daily metrics
+
+#### Session History Table
+
+Shows recent sessions with:
+
+- Date
+- Duration
 - Average blink rate
-- Longest session
-- Daily charts (fatigue and blink rate)
+- Fatigue score
+- Long closure events
 
-### Monthly view
-
-Shows:
-
-- Weekly trend for last 4 weeks
-- High fatigue days (score > 70)
-- Burnout risk (`LOW`/`MEDIUM`/`HIGH`) derived from:
-  - consecutive weekly fatigue increases
-  - average session duration
-- Daily monthly breakdown
-
-## API Overview
+## 🔌 API Reference
 
 Base path: `/api/v1`
 
-- `POST /auth/register`
-- `POST /auth/login`
-- `GET /auth/me`
-- `POST /sessions`
-- `GET /sessions`
-- `GET /analytics/weekly`
-- `GET /analytics/monthly`
+### Authentication Endpoints
 
-Health check:
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| `POST` | `/auth/register` | Create new user account | No |
+| `POST` | `/auth/login` | Authenticate and get JWT token | No |
+| `GET` | `/auth/me` | Get current user profile | Yes |
 
-- `GET /api/health`
+### Session Endpoints
 
-## Database Schema
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| `POST` | `/sessions` | Save session summary | Yes |
+| `GET` | `/sessions` | Get user session history | Yes |
 
-Tables initialized by backend startup:
+**Query Parameters for `GET /sessions`:**
+- `limit` (optional): Number of sessions to return (default: 50)
 
-- `users`
-  - `id`, `email`, `encrypted_password`, timestamps
-- `sessions`
-  - `id`, `user_id`, `session_date`, `duration_minutes`, `avg_blink_rate`, `fatigue_score`, `long_closure_events`, timestamps
+### Analytics Endpoints
 
-## Environment and Prerequisites
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| `GET` | `/analytics/weekly` | Current week aggregates | Yes |
+| `GET` | `/analytics/monthly` | Last 4 weeks trend | Yes |
 
-- Node.js 18+
-- npm
-- PostgreSQL
+### Health Check
 
-Backend uses these env vars (with defaults in `backend/db.js`):
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| `GET` | `/api/health` | API status check | No |
 
-- `DB_USER` (default: `dev16`)
-- `DB_HOST` (default: `/var/run/postgresql`)
-- `DB_NAME` (default: `devwell_dev`)
-- `DB_PORT` (default: `5432`)
-- `JWT_SECRET` (**required for auth**)
-- `PORT` (default: `3001`)
+### Authentication
 
-Create `backend/.env` (example):
+All protected endpoints require a JWT token in the `Authorization` header:
+
+```
+Authorization: Bearer <jwt_token>
+```
+
+### Example: Save Session
+
+**Request:**
+```json
+POST /api/v1/sessions
+{
+  "session_date": "2024-04-07",
+  "duration_minutes": 45.5,
+  "avg_blink_rate": 12.3,
+  "fatigue_score": 35,
+  "long_closure_events": 2
+}
+```
+
+**Response:**
+```json
+{
+  "id": 123,
+  "session_date": "2024-04-07",
+  "duration_minutes": 45.5,
+  "avg_blink_rate": 12.3,
+  "fatigue_score": 35,
+  "long_closure_events": 2,
+  "created_at": "2024-04-07T10:30:00.000Z"
+}
+```
+
+## 🗄️ Database Schema
+
+Tables are automatically created on backend startup via `initDB()` in `db.js`.
+
+### Users Table
+
+```sql
+CREATE TABLE users (
+  id SERIAL PRIMARY KEY,
+  email VARCHAR(255) UNIQUE NOT NULL,
+  encrypted_password VARCHAR(255) NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+| Column | Type | Description |
+|--------|------|-------------|  
+| `id` | SERIAL | Auto-incrementing primary key |
+| `email` | VARCHAR(255) | Unique user email |
+| `encrypted_password` | VARCHAR(255) | Bcrypt-hashed password |
+| `created_at` | TIMESTAMPTZ | Account creation timestamp |
+| `updated_at` | TIMESTAMPTZ | Last update timestamp |
+
+### Sessions Table
+
+```sql
+CREATE TABLE sessions (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  session_date DATE NOT NULL,
+  duration_minutes REAL NOT NULL,
+  avg_blink_rate REAL NOT NULL,
+  fatigue_score REAL NOT NULL,
+  long_closure_events INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX idx_sessions_date ON sessions(session_date);
+```
+
+| Column | Type | Description |
+|--------|------|-------------|  
+| `id` | SERIAL | Auto-incrementing primary key |
+| `user_id` | INTEGER | Foreign key to users table |
+| `session_date` | DATE | Date of the session |
+| `duration_minutes` | REAL | Session length in minutes |
+| `avg_blink_rate` | REAL | Average blinks per minute |
+| `fatigue_score` | REAL | Final fatigue score (0-100) |
+| `long_closure_events` | INTEGER | Count of drowsy events |
+| `created_at` | TIMESTAMPTZ | Record creation timestamp |
+| `updated_at` | TIMESTAMPTZ | Last update timestamp |
+
+**Indexes:**
+- `idx_sessions_user_id` - Optimizes user-specific session queries
+- `idx_sessions_date` - Optimizes date-range analytics queries
+
+## ⚙️ Environment and Prerequisites
+
+### Required Software
+
+- **Node.js** 18 or higher
+- **npm** (comes with Node.js)
+- **PostgreSQL** 12 or higher
+
+### Environment Variables
+
+Backend uses these environment variables (with defaults in `backend/db.js`):
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `JWT_SECRET` | - | **Yes** | Secret key for JWT token signing |
+| `DB_USER` | `dev16` | No | PostgreSQL username |
+| `DB_HOST` | `/var/run/postgresql` | No | PostgreSQL host path |
+| `DB_NAME` | `devwell_dev` | No | Database name |
+| `DB_PORT` | `5432` | No | PostgreSQL port |
+| `PORT` | `3001` | No | Backend server port |
+| `NODE_ENV` | `development` | No | Environment mode |
+
+### Setup `.env` File
+
+Create `backend/.env` with your configuration:
 
 ```env
-JWT_SECRET=change_this_to_a_strong_secret
+# Required
+JWT_SECRET=your_super_secret_key_change_this
+
+# Database (optional - defaults shown)
 DB_USER=dev16
 DB_HOST=/var/run/postgresql
 DB_NAME=devwell_dev
 DB_PORT=5432
+
+# Server (optional)
 PORT=3001
 ```
 
-## How to Start (Frontend + Backend)
+> **⚠️ Security Note**: Never commit `.env` files to version control. The `JWT_SECRET` should be a strong, random string in production.
 
-## 1) Install dependencies
+## 🚀 Quick Start Guide
+
+### Step 1: Install Dependencies
 
 ```bash
-cd backend && npm install
-cd ../frontend && npm install
+# Install backend dependencies
+cd backend
+npm install
+
+# Install frontend dependencies
+cd ../frontend
+npm install
 ```
 
-## 2) Start backend
+### Step 2: Configure Environment
+
+```bash
+cd backend
+# Create .env file (see Environment section above)
+nano .env  # or use your preferred editor
+```
+
+### Step 3: Start Backend Server
 
 ```bash
 cd backend
 npm start
 ```
 
-Backend runs on: `http://localhost:3001`
+**Expected Output:**
+```
+Database tables initialized
+DevWell API running on http://localhost:3001
+```
 
-## 3) Start frontend
+The backend will:
+- Connect to PostgreSQL
+- Create database tables if they don't exist
+- Start listening on port 3001
+
+### Step 4: Start Frontend Dev Server
+
+Open a new terminal:
 
 ```bash
 cd frontend
 npm run dev
 ```
 
-Frontend runs on Vite default: `http://localhost:5173`
+**Expected Output:**
+```
+VITE v7.x.x  ready in xxx ms
 
-Vite proxy forwards `/api` to backend (`http://localhost:3001`).
+➜  Local:   http://localhost:5173/
+➜  Network: use --host to expose
+```
 
-## Optional: Seed demo data
+The frontend will:
+- Start Vite dev server on port 5173
+- Automatically proxy `/api` requests to `http://localhost:3001`
+- Enable hot module replacement (HMR)
+
+### Step 5: Access the Application
+
+Open your browser and navigate to: **http://localhost:5173**
+
+### Optional: Seed Demo Data
+
+To quickly test the app with sample data:
 
 ```bash
 cd backend
 npm run seed
 ```
 
-Creates demo account:
+This creates a demo account:
+- **Email**: `demo@devwell.ai`
+- **Password**: `demo123`
+- **Sessions**: 10 sample sessions with varying metrics
 
-- email: `demo@devwell.ai`
-- password: `demo123`
+> **Note**: The seed script will not duplicate data if run multiple times.
 
-## Build Commands
+## 📦 Build Commands
 
-### Frontend production build
+### Frontend Production Build
 
 ```bash
 cd frontend
 npm run build
 ```
 
-### Frontend preview build
+This will:
+- Compile TypeScript
+- Bundle and minify JavaScript/CSS
+- Optimize assets
+- Output to `frontend/dist/`
+
+### Preview Production Build
 
 ```bash
 cd frontend
 npm run preview
 ```
 
-## Common Dev Management
+Serves the production build locally for testing.
 
-### Restart backend
+### Linting
+
+```bash
+cd frontend
+npm run lint
+```
+
+Runs ESLint to check for code quality issues.
+
+## 🛠️ Development Tips
+
+### Restart Backend
 
 ```bash
 cd backend
 npm start
 ```
 
-### Restart frontend dev server
+> Note: For auto-restart on file changes, consider using `nodemon`:
+> ```bash
+> npm install -g nodemon
+> nodemon server.js
+> ```
+
+### Restart Frontend
 
 ```bash
 cd frontend
 npm run dev
 ```
 
-### If token/session gets stuck
+Vite supports hot module replacement (HMR), so most changes won't require a restart.
 
-- Clear `devwell_token` from browser local storage.
-- Re-login from `/login`.
+### Clear Browser Cache
 
-## Notes
+If you experience issues with stale data:
 
-- Fatigue detection is computed client-side from webcam landmarks.
-- Session persistence is maintained across Dashboard/Analytics route switches.
-- Session summary is saved only when session ends.
+1. Open DevTools (F12)
+2. Right-click the refresh button
+3. Select "Empty Cache and Hard Reload"
+
+Or clear specific storage:
+
+```javascript
+// In browser console
+localStorage.removeItem('devwell_token');
+sessionStorage.clear();
+```
+
+### Debug Session Issues
+
+If session data gets stuck:
+
+1. Check browser console for errors
+2. Verify sessionStorage:
+   ```javascript
+   // In browser console
+   console.log(sessionStorage.getItem('devwell_active_session'));
+   console.log(sessionStorage.getItem('devwell_session_data'));
+   ```
+3. Clear and restart:
+   ```javascript
+   sessionStorage.clear();
+   location.reload();
+   ```
+
+### Debug Blink Detection
+
+Enable verbose logging in the fatigue engine:
+
+1. Open browser console (F12)
+2. Start a session
+3. Watch for logs:
+   - `[EAR]` - Eye aspect ratio values
+   - `[Eye]` - Eye open/close events
+   - `[Blink]` - Blink detection and classification
+   - `[Calibration]` - EAR threshold calibration
+   - `[Session]` - Session save/restore events
+
+### Database Management
+
+**Connect to PostgreSQL:**
+```bash
+psql -U dev16 -d devwell_dev
+```
+
+**View recent sessions:**
+```sql
+SELECT * FROM sessions ORDER BY created_at DESC LIMIT 10;
+```
+
+**Clear all sessions:**
+```sql
+DELETE FROM sessions;
+```
+
+**View user accounts:**
+```sql
+SELECT id, email, created_at FROM users;
+```
+
+## 🔒 Privacy & Security
+
+### Data Privacy
+
+- **100% Client-Side Processing**: All facial recognition and fatigue detection happens in the browser
+- **No Video Storage**: Video frames are never sent to the server or stored
+- **No Landmark Storage**: Facial landmark coordinates are processed in real-time and discarded
+- **Aggregated Data Only**: Only summary metrics (blink count, fatigue score) are sent to backend
+- **User Consent**: Camera access requires explicit browser permission
+
+### Security Features
+
+- **JWT Authentication**: Secure token-based auth with bcrypt password hashing
+- **CORS Protection**: Configured allowed origins for API access
+- **Rate Limiting**: API endpoints protected against abuse (production mode)
+- **Input Validation**: Backend validates all incoming data
+- **SQL Injection Prevention**: Parameterized queries via `pg` library
+
+## ⚠️ Known Limitations
+
+- **Lighting Dependency**: Poor lighting may affect detection accuracy
+- **Camera Quality**: Low-resolution webcams may reduce landmark precision
+- **Browser Compatibility**: Requires modern browser with WebGL support
+- **Single Face**: Only tracks one face at a time
+- **Session Scope**: Session data is tab-specific (sessionStorage)
+
+## 🐛 Troubleshooting
+
+### Camera Not Working
+
+1. Check browser permissions for camera access
+2. Ensure no other app is using the camera
+3. Try a different browser
+4. Check console for MediaPipe errors
+
+### FaceMesh Not Loading
+
+1. Check internet connection (loads from CDN)
+2. Clear browser cache
+3. Check browser console for CDN errors
+4. Try disabling ad blockers
+
+### Session Not Restoring
+
+1. Check browser console for errors
+2. Verify sessionStorage is not disabled
+3. Try in incognito/private mode
+4. Clear all site data and restart
+
+### High Fatigue False Positives
+
+1. Ensure good lighting
+2. Position camera at eye level
+3. Allow 5-second calibration period
+4. Check EAR threshold in console logs
+
+### API Connection Issues
+
+1. Verify backend is running on port 3001
+2. Check `backend/.env` configuration
+3. Verify PostgreSQL is running
+4. Check CORS settings in `server.js`
+
+## 📝 License
+
+This project is for educational and personal use.
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📧 Support
+
+For issues or questions:
+- Check the troubleshooting section above
+- Review browser console for error messages
+- Verify all environment variables are set correctly
+
+---
+
+**Built with ❤️ for developer wellness**

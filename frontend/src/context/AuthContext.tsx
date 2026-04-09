@@ -27,8 +27,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       api.get('/auth/me')
         .then((res) => setUser(res.data.user))
         .catch(() => {
+          // Token is invalid or expired
           localStorage.removeItem('devwell_token');
           setToken(null);
+          setUser(null);
+          // Don't clear session data here - let SessionContext handle it
+          // Session data will be cleared on next explicit login/logout
+          console.log('[Auth] Token invalid, user logged out');
         })
         .finally(() => setLoading(false));
     } else {
@@ -41,6 +46,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('devwell_token', res.data.token);
     setToken(res.data.token);
     setUser(res.data.user);
+    
+    // Clear any stale session data from previous user
+    sessionStorage.removeItem('devwell_active_session');
+    sessionStorage.removeItem('devwell_session_data');
+    console.log('[Auth] User logged in, cleared stale session data');
   };
 
   const register = async (email: string, password: string) => {
@@ -48,12 +58,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('devwell_token', res.data.token);
     setToken(res.data.token);
     setUser(res.data.user);
+    
+    // Clear any stale session data (new user shouldn't have session data)
+    sessionStorage.removeItem('devwell_active_session');
+    sessionStorage.removeItem('devwell_session_data');
+    console.log('[Auth] User registered, cleared session data');
   };
 
   const logout = () => {
+    // Clear authentication data
     localStorage.removeItem('devwell_token');
     setToken(null);
     setUser(null);
+    
+    // Clear all session-related data to prevent cross-user data leakage
+    sessionStorage.removeItem('devwell_active_session');
+    sessionStorage.removeItem('devwell_session_data');
+    
+    console.log('[Auth] User logged out, cleared all session data');
   };
 
   return (

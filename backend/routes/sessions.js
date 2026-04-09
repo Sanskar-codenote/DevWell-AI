@@ -33,8 +33,10 @@ router.get('/', authenticateToken, async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit) || 20, 100);
     const offset = parseInt(req.query.offset) || 0;
 
+    // Order by created_at DESC to show most recent sessions first
+    // This ensures correct ordering even for multiple sessions on the same day
     const result = await pool.query(
-      'SELECT * FROM sessions WHERE user_id = $1 ORDER BY session_date DESC LIMIT $2 OFFSET $3',
+      'SELECT * FROM sessions WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
       [req.user.id, limit, offset]
     );
 
