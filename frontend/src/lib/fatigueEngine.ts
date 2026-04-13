@@ -101,10 +101,19 @@ export class FatigueEngine {
         
         this.blinkCount = restoredData.blinkCount || 0;
         this.longClosureEvents = restoredData.longClosureEvents || 0;
-        this.blinkHistory = restoredData.blinkHistory || [];
+        this.blinkHistory = []; // Will be rebuilt as new blinks occur
         this.lastBreakAlert = Date.now();
         
-        console.log(`[Engine] Restored session: ${savedDuration.toFixed(1)}min duration, ${this.blinkCount} blinks`);
+        // Calculate session average blink rate from restored data
+        if (savedDuration > 0 && this.blinkCount > 0) {
+          this.sessionAvgBlinkRate = Math.round(this.blinkCount / Math.max(savedDuration, 1));
+        } else {
+          this.sessionAvgBlinkRate = 0;
+        }
+        // Current blink rate starts at 0 (no blinks in last 60s yet)
+        this.currentBlinkRate = 0;
+        
+        console.log(`[Engine] Restored session: ${savedDuration.toFixed(1)}min duration, ${this.blinkCount} blinks, ${this.sessionAvgBlinkRate}/min avg rate`);
       } else {
         // Fresh session
         this.sessionStart = Date.now();
@@ -433,9 +442,12 @@ export class FatigueEngine {
     const sessionMinutes = (now - this.sessionStart) / 60000;
 
     // Fatigue score calculation (0-100)
+    // Use currentBlinkRate if available, otherwise fall back to sessionAvgBlinkRate (after restore)
+    const effectiveBlinkRate = this.currentBlinkRate > 0 ? this.currentBlinkRate : this.sessionAvgBlinkRate;
+    
     const blinkDeficit = sessionMinutes < 1
       ? 0
-      : Math.max(0, (LOW_BLINK_RATE - this.currentBlinkRate) / LOW_BLINK_RATE) * 35;
+      : Math.max(0, (LOW_BLINK_RATE - effectiveBlinkRate) / LOW_BLINK_RATE) * 35;
     const closurePenalty = Math.min(this.longClosureEvents * 12, 36);
     // Let fatigue grow gradually with session duration after a short grace period.
     const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 40, 40);
