@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Activity, Eye, ArrowRight } from 'lucide-react';
+import { getErrorMessage } from '../lib/api';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -18,8 +19,8 @@ export default function LoginPage() {
     try {
       await login(email, password);
       navigate('/dashboard');
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Login failed');
+    } catch (error) {
+      setError(getErrorMessage(error, 'Login failed'));
     } finally {
       setLoading(false);
     }

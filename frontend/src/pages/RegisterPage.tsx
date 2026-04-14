@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Activity, ArrowRight } from 'lucide-react';
+import { getErrorMessage } from '../lib/api';
 
 export default function RegisterPage() {
   const [email, setEmail] = useState('');
@@ -23,8 +24,8 @@ export default function RegisterPage() {
     try {
       await register(email, password);
       navigate('/dashboard');
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Registration failed');
+    } catch (error) {
+      setError(getErrorMessage(error, 'Registration failed'));
     } finally {
       setLoading(false);
     }

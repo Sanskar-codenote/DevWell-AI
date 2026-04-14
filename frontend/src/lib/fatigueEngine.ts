@@ -14,6 +14,50 @@ export interface FatigueState {
   isRunning: boolean;
 }
 
+export interface SessionSummary extends FatigueState {
+  sessionDate: string;
+}
+
+export interface RestoredSessionData {
+  blinkCount: number;
+  longClosureEvents: number;
+  savedAt: number;
+  durationAtSave: number;
+}
+
+interface FaceLandmark {
+  x: number;
+  y: number;
+  z?: number;
+}
+
+interface FaceMeshResults {
+  multiFaceLandmarks?: FaceLandmark[][];
+}
+
+interface FaceMeshInstance {
+  setOptions: (options: {
+    maxNumFaces: number;
+    refineLandmarks: boolean;
+    minDetectionConfidence: number;
+    minTrackingConfidence: number;
+  }) => void;
+  onResults: (callback: (results: FaceMeshResults) => void) => void;
+  initialize: () => Promise<void>;
+  send: (input: { image: HTMLVideoElement }) => Promise<void>;
+  close: () => void;
+}
+
+interface FaceMeshConstructor {
+  new (config: { locateFile: (file: string) => string }): FaceMeshInstance;
+}
+
+declare global {
+  interface Window {
+    FaceMesh?: FaceMeshConstructor;
+  }
+}
+
 type FatigueCallback = (state: FatigueState) => void;
 type AlertCallback = (
   type: 'blink_rate' | 'break' | 'fatigue_moderate' | 'fatigue_high',
@@ -21,7 +65,7 @@ type AlertCallback = (
 ) => void;
 
 // Eye Aspect Ratio calculation using 6 landmark points per eye
-function computeEAR(landmarks: any[], eyeIndices: number[]): number {
+function computeEAR(landmarks: FaceLandmark[], eyeIndices: number[]): number {
   const p = eyeIndices.map(i => landmarks[i]);
   // Vertical distances
   const v1 = Math.hypot(p[1].x - p[5].x, p[1].y - p[5].y);
@@ -51,7 +95,7 @@ const FATIGUE_ALERT_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const REOPEN_STABILITY_MS = 90;
 
 export class FatigueEngine {
-  private faceMesh: any = null;
+  private faceMesh: FaceMeshInstance | null = null;
   private videoElement: HTMLVideoElement | null = null;
   private onFatigueUpdate: FatigueCallback;
   private onAlert: AlertCallback;
@@ -84,15 +128,15 @@ export class FatigueEngine {
     this.onAlert = onAlert;
   }
 
-  async start(videoElement: HTMLVideoElement, restoredData?: any): Promise<void> {
-    console.log('FatigueEngine.start() called with video element:', videoElement);
+  async start(videoElement: HTMLVideoElement, restoredData?: RestoredSessionData): Promise<void> {
     try {
       this.videoElement = videoElement;
+      const restoredSessionAvg = restoredData?.durationAtSave && restoredData.blinkCount > 0
+        ? Math.round(restoredData.blinkCount / Math.max(restoredData.durationAtSave, 1))
+        : 0;
       
       // Check if we have restored session data
       if (restoredData) {
-        console.log('[Engine] Restoring session from saved data:', restoredData);
-        
         // Restore the session start time by calculating backwards from when it was saved
         // This preserves the actual elapsed time
         const savedDuration = restoredData.durationAtSave || 0;
@@ -105,15 +149,9 @@ export class FatigueEngine {
         this.lastBreakAlert = Date.now();
         
         // Calculate session average blink rate from restored data
-        if (savedDuration > 0 && this.blinkCount > 0) {
-          this.sessionAvgBlinkRate = Math.round(this.blinkCount / Math.max(savedDuration, 1));
-        } else {
-          this.sessionAvgBlinkRate = 0;
-        }
+        this.sessionAvgBlinkRate = restoredSessionAvg;
         // Current blink rate starts at 0 (no blinks in last 60s yet)
         this.currentBlinkRate = 0;
-        
-        console.log(`[Engine] Restored session: ${savedDuration.toFixed(1)}min duration, ${this.blinkCount} blinks, ${this.sessionAvgBlinkRate}/min avg rate`);
       } else {
         // Fresh session
         this.sessionStart = Date.now();
@@ -121,10 +159,10 @@ export class FatigueEngine {
         this.blinkCount = 0;
         this.longClosureEvents = 0;
         this.blinkHistory = [];
+        this.sessionAvgBlinkRate = 0;
+        this.currentBlinkRate = 0;
       }
       
-      this.currentBlinkRate = 0;
-      this.sessionAvgBlinkRate = 0;
       this.running = true;
       this.earThreshold = DEFAULT_EAR_THRESHOLD;
       this.openEARBaseline = 0;
@@ -135,28 +173,21 @@ export class FatigueEngine {
       this.openStateStartAt = 0;
       this.lastBlinkAt = 0;
       this.lastFatigueAlertAt = 0;
-      console.log('Engine state initialized');
-
       // Load FaceMesh via CDN
-      console.log('Checking for FaceMesh library...');
-      const FaceMesh = (window as any).FaceMesh;
-      console.log('FaceMesh found:', !!FaceMesh);
+      const FaceMesh = window.FaceMesh;
       
       // Wait for FaceMesh to load if not available immediately
       if (!FaceMesh) {
-        console.log('FaceMesh not available, waiting for it to load...');
         await new Promise<void>((resolve, reject) => {
           let attempts = 0;
           const maxAttempts = 50; // 5 seconds with 100ms intervals
           const checkInterval = setInterval(() => {
             attempts++;
-            const fm = (window as any).FaceMesh;
+            const fm = window.FaceMesh;
             if (fm) {
-              console.log(`FaceMesh loaded after ${attempts * 100}ms`);
               clearInterval(checkInterval);
               resolve();
             } else if (attempts >= maxAttempts) {
-              console.error('FaceMesh failed to load after timeout');
               clearInterval(checkInterval);
               reject(new Error('MediaPipe FaceMesh failed to load. Please check your internet connection and refresh the page.'));
             }
@@ -164,13 +195,15 @@ export class FatigueEngine {
         });
       }
 
-      console.log('Creating FaceMesh instance...');
-      const FaceMeshFinal = (window as any).FaceMesh;
+      const FaceMeshFinal = window.FaceMesh;
+      if (!FaceMeshFinal) {
+        throw new Error('MediaPipe FaceMesh is unavailable.');
+      }
+
       this.faceMesh = new FaceMeshFinal({
         locateFile: (file: string) =>
           `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
       });
-      console.log('FaceMesh instance created');
 
       this.faceMesh.setOptions({
         maxNumFaces: 1,
@@ -179,33 +212,23 @@ export class FatigueEngine {
         minTrackingConfidence: 0.5,
       });
 
-      this.faceMesh.onResults((results: any) => {
-        console.log('Processing results...');
+      this.faceMesh.onResults((results: FaceMeshResults) => {
         this.processResults(results);
       });
-      console.log('FaceMesh options set and results handler registered');
       
       await this.faceMesh.initialize();
-      console.log('FaceMesh initialized');
 
       // Start camera
-      console.log('Requesting camera access...');
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: 640, height: 480, facingMode: 'user' },
       });
-      console.log('Camera stream obtained:', stream);
       videoElement.srcObject = stream;
-      console.log('Video element srcObject set');
       
       await videoElement.play();
-      console.log('Video element playing');
 
       this.processFrame();
       this.startHeartbeat();
-      console.log('Process frame started');
     } catch (error) {
-      console.error('Error in FatigueEngine.start():', error);
-      console.error('Error stack:', (error as Error).stack);
       this.running = false;
       throw error;
     }
@@ -240,7 +263,7 @@ export class FatigueEngine {
     this.animationFrameId = requestAnimationFrame(() => this.processFrame());
   }
 
-  private processResults(results: any): void {
+  private processResults(results: FaceMeshResults): void {
     if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
       this.handleUnknownTrackingFrame(Date.now());
       this.emitState();
@@ -277,11 +300,6 @@ export class FatigueEngine {
       avgEAR < this.earThreshold &&
       Math.max(leftEAR, rightEAR) < this.earThreshold * 1.08;
 
-    // Log EAR values every 100 frames to help debug
-    if (this.blinkCount % 10 === 0 || !this.eyesClosed !== !eyesCurrentlyClosed) {
-      console.log(`[EAR] Left: ${leftEAR.toFixed(3)}, Right: ${rightEAR.toFixed(3)}, Avg: ${avgEAR.toFixed(3)}, Threshold: ${this.earThreshold.toFixed(3)}, Closed: ${eyesCurrentlyClosed}`);
-    }
-
     if (eyesCurrentlyClosed) {
       this.openStateStartAt = 0;
       if (!this.eyesClosed) {
@@ -290,7 +308,6 @@ export class FatigueEngine {
         this.eyeClosedStart = now;
         this.drowsinessCountedForCurrentClosure = false;
         this.minEARDuringClosure = avgEAR;
-        console.log(`[Eye] Closed - EAR: ${avgEAR.toFixed(3)}, Threshold: ${this.earThreshold.toFixed(3)}`);
       } else {
         this.minEARDuringClosure = Math.min(this.minEARDuringClosure, avgEAR);
       }
@@ -323,14 +340,11 @@ export class FatigueEngine {
         // Stability period passed, classify the closure event
         // Use 'now' to get the actual total closure duration
         const closureDuration = now - this.eyeClosedStart;
-        console.log(`[Blink] Classifying closure: ${closureDuration}ms (threshold: ${BLINK_MIN_MS}-${DROWSINESS_THRESHOLD_MS}ms)`);
-        
         if (closureDuration >= DROWSINESS_THRESHOLD_MS) {
           // Long closures are drowsiness events and must never be counted as blinks.
           if (!this.drowsinessCountedForCurrentClosure) {
             this.longClosureEvents++;
             this.drowsinessCountedForCurrentClosure = true;
-            console.log(`[Drowsy] Long closure detected: ${closureDuration}ms`);
           }
         } else if (
           closureDuration >= BLINK_MIN_MS &&
@@ -341,14 +355,10 @@ export class FatigueEngine {
           this.blinkCount++;
           this.blinkHistory.push(now);
           this.lastBlinkAt = now;
-          console.log(`[Blink] ✓ Detected! Count: ${this.blinkCount}, Duration: ${closureDuration}ms`);
-        } else {
-          console.log(`[Blink] ✗ Not counted - Duration: ${closureDuration}ms, Since last blink: ${now - this.lastBlinkAt}ms`);
         }
         
         // Reset closure tracking after classification
         this.resetClosureTracking();
-        console.log(`[Eye] Opened - Closure classified after ${timeSinceOpen}ms stability`);
       }
       this.eyesClosed = false;
     }
@@ -387,11 +397,6 @@ export class FatigueEngine {
       const p80 = sorted[Math.min(idx, sorted.length - 1)];
       if (p80 > 0) {
         this.openEARBaseline = p80;
-      }
-      
-      // Log calibration progress
-      if (this.earCalibrationSamples.length % 10 === 0) {
-        console.log(`[Calibration] Samples: ${this.earCalibrationSamples.length}, Baseline: ${this.openEARBaseline.toFixed(3)}, Threshold: ${this.earThreshold.toFixed(3)}`);
       }
     } else if (!this.eyesClosed && avgEAR > this.earThreshold) {
       // Adapt baseline gradually to lighting/angle changes while eyes are likely open.
@@ -483,7 +488,7 @@ export class FatigueEngine {
     });
   }
 
-  stop(): FatigueState & { sessionDate: string } {
+  stop(): SessionSummary {
     this.running = false;
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);

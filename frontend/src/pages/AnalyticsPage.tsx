@@ -37,12 +37,24 @@ interface SessionRecord {
 
 const burnoutColors = { LOW: 'emerald', MEDIUM: 'amber', HIGH: 'red' } as const;
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+interface ChartTooltipEntry {
+  color?: string;
+  name?: string;
+  value?: number | string;
+}
+
+interface CustomTooltipProps {
+  active?: boolean;
+  payload?: ChartTooltipEntry[];
+  label?: string;
+}
+
+const CustomTooltip = ({ active, payload, label }: CustomTooltipProps) => {
   if (!active || !payload?.length) return null;
   return (
     <div className="bg-slate-800 border border-white/10 rounded-xl px-3 py-2 shadow-xl">
       <p className="text-xs text-slate-400 mb-1">{label}</p>
-      {payload.map((p: any, i: number) => (
+      {payload.map((p, i) => (
         <p key={i} className="text-sm font-medium" style={{ color: p.color }}>
           {p.name}: {typeof p.value === 'number' ? p.value.toFixed(1) : p.value}
         </p>

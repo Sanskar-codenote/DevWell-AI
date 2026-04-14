@@ -22,7 +22,15 @@ app.use(cors({
   origin: (origin, callback) => {
     // Allow non-browser clients (curl/postman) with no Origin header.
     if (!origin) return callback(null, true);
+    
+    // Allow Chrome extensions (chrome-extension://*)
+    if (origin.startsWith('chrome-extension://')) {
+      return callback(null, true);
+    }
+    
+    // Allow localhost origins
     if (allowedOrigins.includes(origin)) return callback(null, true);
+    
     return callback(new Error(`CORS blocked for origin: ${origin}`));
   },
   credentials: true,
@@ -45,6 +53,21 @@ app.use('/api/v1/analytics', analyticsRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+app.use((err, req, res, next) => {
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  const isCorsError = err instanceof Error && err.message.startsWith('CORS blocked for origin:');
+  if (!isCorsError) {
+    console.error(err);
+  }
+
+  res.status(isCorsError ? 403 : 500).json({
+    error: isCorsError ? err.message : 'Internal server error',
+  });
 });
 
 async function start() {

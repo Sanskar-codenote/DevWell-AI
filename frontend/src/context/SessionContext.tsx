@@ -1,10 +1,21 @@
 import { createContext, useContext, useState, useRef, useCallback, useEffect, type ReactNode } from 'react';
 import { FatigueEngine } from '../lib/fatigueEngine';
-import type { FatigueState } from '../lib/fatigueEngine';
+import type { FatigueState, RestoredSessionData, SessionSummary } from '../lib/fatigueEngine';
 import api from '../lib/api';
-
-const ACTIVE_SESSION_KEY = 'devwell_active_session';
-const SESSION_DATA_KEY = 'devwell_session_data';
+import { useAuth } from './AuthContext';
+import {
+  ACTIVE_SESSION_KEY,
+  SESSION_DATA_KEY,
+  EXTENSION_STATE_ATTRIBUTE,
+  EXTENSION_COMMAND_ATTRIBUTE,
+  SESSION_OWNER_KEY,
+  SHARED_SESSION_KEY,
+  SESSION_COMMAND_KEY,
+  clearPersistedSession,
+} from '../lib/extensionSync';
+const TAB_ID_KEY = 'devwell_tab_id';
+const OWNER_STALE_MS = 6000;
+const EXTENSION_PING_MS = 1000;
 
 const defaultState: FatigueState = {
   blinkCount: 0,
@@ -25,13 +36,32 @@ interface Alert {
   message: string;
 }
 
+interface SessionOwnerMeta {
+  tabId: string;
+  heartbeatAt: number;
+}
+
+interface SharedSessionSnapshot {
+  ownerTabId: string;
+  updatedAt: number;
+  state: FatigueState;
+  restoredData: RestoredSessionData;
+}
+
+interface SessionCommand {
+  type: 'stop';
+  requesterTabId: string;
+  issuedAt: number;
+}
+
 interface SessionContextType {
   state: FatigueState;
   alerts: Alert[];
-  sessionSummary: any;
+  sessionSummary: SessionSummary | null;
   saving: boolean;
   videoRef: React.RefObject<HTMLVideoElement | null>;
   isStarting: boolean;
+  isSessionOwner: boolean;
   startSession: () => Promise<void>;
   stopSession: () => Promise<void>;
   dismissAlert: (id: number) => void;
@@ -40,21 +70,83 @@ interface SessionContextType {
 
 const SessionContext = createContext<SessionContextType | null>(null);
 
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  return fallback;
+}
+
+function readJson<T>(key: string): T | null {
+  const raw = localStorage.getItem(key);
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function getOrCreateTabId(): string {
+  const existing = sessionStorage.getItem(TAB_ID_KEY);
+  if (existing) return existing;
+
+  const next = crypto.randomUUID();
+  sessionStorage.setItem(TAB_ID_KEY, next);
+  return next;
+}
+
+function isOwnerAlive(owner: SessionOwnerMeta | null): boolean {
+  return Boolean(owner && Date.now() - owner.heartbeatAt < OWNER_STALE_MS);
+}
+
+function buildRestoredData(state: FatigueState): RestoredSessionData {
+  return {
+    blinkCount: state.blinkCount,
+    longClosureEvents: state.longClosureEvents,
+    savedAt: Date.now(),
+    durationAtSave: state.sessionDurationMinutes,
+  };
+}
+
+function clearSharedSessionKeys(): void {
+  clearPersistedSession();
+  localStorage.removeItem(SHARED_SESSION_KEY);
+  localStorage.removeItem(SESSION_OWNER_KEY);
+  localStorage.removeItem(SESSION_COMMAND_KEY);
+}
+
 export function SessionProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
   const [state, setState] = useState<FatigueState>(defaultState);
+  const [externalState, setExternalState] = useState<FatigueState | null>(null);
+  const [extensionAvailable, setExtensionAvailable] = useState(false);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [saving, setSaving] = useState(false);
-  const [sessionSummary, setSessionSummary] = useState<any>(null);
+  const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
   const [isStarting, setIsStarting] = useState(false);
+  const [isSessionOwner, setIsSessionOwner] = useState(false);
   const engineRef = useRef<FatigueEngine | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const alertIdRef = useRef(0);
   const restoreAttemptedRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const tabIdRef = useRef(getOrCreateTabId());
+  const stateRef = useRef<FatigueState>(defaultState);
+  const takeoverInFlightRef = useRef(false);
+  const extensionCommandInFlightRef = useRef(false);
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   const playHighFatigueSound = useCallback(() => {
     if (typeof window === 'undefined') return;
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    const AudioCtx =
+      window.AudioContext ||
+      (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioCtx) return;
 
     const ctx = audioContextRef.current ?? new AudioCtx();
@@ -84,100 +176,120 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const handleAlert = useCallback((type: string, message: string) => {
     const id = ++alertIdRef.current;
-    setAlerts(prev => [...prev.slice(-4), { id, type, message }]);
+    setAlerts((prev) => [...prev.slice(-4), { id, type, message }]);
+
     const isFatigueNotification = type === 'fatigue_moderate' || type === 'fatigue_high';
     if (isFatigueNotification && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
       new Notification('DevWell AI Fatigue Alert', { body: message });
     }
+
     if (type === 'fatigue_high') {
       playHighFatigueSound();
     }
-    setTimeout(() => setAlerts(prev => prev.filter(a => a.id !== id)), 8000);
+
+    setTimeout(() => {
+      setAlerts((prev) => prev.filter((alert) => alert.id !== id));
+    }, 8000);
   }, [playHighFatigueSound]);
 
-  const startSession = useCallback(async () => {
-    console.log('[Session] Starting session...');
+  const persistSharedState = useCallback((nextState: FatigueState) => {
+    const restoredData = buildRestoredData(nextState);
+    const ownerMeta: SessionOwnerMeta = {
+      tabId: tabIdRef.current,
+      heartbeatAt: Date.now(),
+    };
+    const snapshot: SharedSessionSnapshot = {
+      ownerTabId: tabIdRef.current,
+      updatedAt: ownerMeta.heartbeatAt,
+      state: nextState,
+      restoredData,
+    };
+
+    localStorage.setItem(ACTIVE_SESSION_KEY, '1');
+    localStorage.setItem(SESSION_DATA_KEY, JSON.stringify(restoredData));
+    localStorage.setItem(SESSION_OWNER_KEY, JSON.stringify(ownerMeta));
+    localStorage.setItem(SHARED_SESSION_KEY, JSON.stringify(snapshot));
+  }, []);
+
+  const claimOwnership = useCallback(() => {
+    const currentOwner = readJson<SessionOwnerMeta>(SESSION_OWNER_KEY);
+    if (currentOwner && currentOwner.tabId !== tabIdRef.current && isOwnerAlive(currentOwner)) {
+      return false;
+    }
+
+    localStorage.setItem(SESSION_OWNER_KEY, JSON.stringify({
+      tabId: tabIdRef.current,
+      heartbeatAt: Date.now(),
+    } satisfies SessionOwnerMeta));
+
+    return true;
+  }, []);
+
+  const releaseOwnership = useCallback(() => {
+    const currentOwner = readJson<SessionOwnerMeta>(SESSION_OWNER_KEY);
+    if (currentOwner?.tabId === tabIdRef.current) {
+      localStorage.removeItem(SESSION_OWNER_KEY);
+    }
+    setIsSessionOwner(false);
+  }, []);
+
+  const startOwnedSession = useCallback(async (restoredData?: RestoredSessionData) => {
     setSessionSummary(null);
     setAlerts([]);
     setIsStarting(true);
-    
-    // Check for saved session data to restore
-    let restoredSessionData = null;
-    const savedSessionData = sessionStorage.getItem(SESSION_DATA_KEY);
-    console.log('[Session] Checking for saved data...', savedSessionData ? 'FOUND' : 'NOT FOUND');
-    
-    if (savedSessionData) {
-      try {
-        restoredSessionData = JSON.parse(savedSessionData);
-        console.log('[Session] Parsed saved session data:', restoredSessionData);
-      } catch (e) {
-        console.error('[Session] Failed to parse saved session data:', e);
-      }
-    }
-    
-    // Add timeout to prevent hanging
-    const timeoutId = setTimeout(() => {
-      console.error('Session start timeout - taking too long');
+
+    const timeoutId = window.setTimeout(() => {
       handleAlert('error', 'Session initialization is taking too long. Please try again.');
       setIsStarting(false);
-    }, 15000); // 15 second timeout
-    
-    // Check if video ref is available
+    }, 15000);
+
     if (!videoRef.current) {
-      console.error('Video element not available');
       clearTimeout(timeoutId);
       handleAlert('error', 'Video element not available. Please refresh the page.');
       setIsStarting(false);
-      return;
+      releaseOwnership();
+      return false;
     }
-    
-    console.log('Video element available:', videoRef.current);
-    
+
     if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
       await Notification.requestPermission();
     }
-    
+
     try {
-      console.log('Creating fatigue engine...');
       const engine = new FatigueEngine(setState, handleAlert);
       engineRef.current = engine;
-      console.log('Starting engine with video element...');
-      await engine.start(videoRef.current, restoredSessionData);
-      console.log('Engine started successfully');
-      
-      // Mark session as active
-      sessionStorage.setItem(ACTIVE_SESSION_KEY, '1');
-      
-      // Clear saved session data after successful restore
-      if (restoredSessionData) {
-        sessionStorage.removeItem(SESSION_DATA_KEY);
-        console.log('[Session] Cleared saved session data after restore');
-      }
-      
+      setIsSessionOwner(true);
+      await engine.start(videoRef.current, restoredData);
+      persistSharedState({
+        ...stateRef.current,
+        isRunning: true,
+      });
       clearTimeout(timeoutId);
       setIsStarting(false);
-    } catch (err: any) {
+      return true;
+    } catch (error) {
       clearTimeout(timeoutId);
-      console.error('Failed to start session:', err);
-      console.error('Error stack:', err.stack);
-      handleAlert('error', err.message || 'Failed to start webcam. Please check camera permissions.');
-      sessionStorage.removeItem(ACTIVE_SESSION_KEY);
-      setIsStarting(false);
+      engineRef.current = null;
+      releaseOwnership();
+      handleAlert('error', getErrorMessage(error, 'Failed to start webcam. Please check camera permissions.'));
+      return false;
     }
-  }, [handleAlert]);
+  }, [handleAlert, persistSharedState, releaseOwnership]);
 
-  const stopSession = useCallback(async () => {
+  const stopOwnedSession = useCallback(async (shouldSave = true) => {
     if (!engineRef.current) return;
+
     const summary = engineRef.current.stop();
     engineRef.current = null;
-    
-    // Clear session flags and saved data
-    sessionStorage.removeItem(ACTIVE_SESSION_KEY);
-    sessionStorage.removeItem(SESSION_DATA_KEY);
-    
+    clearSharedSessionKeys();
     setState(defaultState);
     setSessionSummary(summary);
     setIsStarting(false);
+    releaseOwnership();
+
+    if (!shouldSave) {
+      return;
+    }
 
     setSaving(true);
     try {
@@ -193,110 +305,286 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     } finally {
       setSaving(false);
     }
-  }, [handleAlert]);
+  }, [handleAlert, releaseOwnership]);
 
-  // Cleanup effect to ensure proper cleanup when component unmounts
-  useEffect(() => {
-    return () => {
-      // Don't clear session on refresh/close - let it persist for restoration
-      // Only clear when explicitly stopping the session
-    };
+  const syncFromSharedSnapshot = useCallback(() => {
+    const snapshot = readJson<SharedSessionSnapshot>(SHARED_SESSION_KEY);
+    if (!snapshot) return false;
+
+    setState(snapshot.state);
+    return true;
   }, []);
 
-  // Warn user before closing/refreshing during active session AND save data immediately
-  useEffect(() => {
+  const startSession = useCallback(async () => {
+    if (isStarting) return;
+
+    if (extensionAvailable) {
+      if (extensionCommandInFlightRef.current) return;
+      extensionCommandInFlightRef.current = true;
+      document.documentElement.setAttribute(
+        EXTENSION_COMMAND_ATTRIBUTE,
+        JSON.stringify({ type: 'start', requestedAt: Date.now() })
+      );
+      window.setTimeout(() => {
+        extensionCommandInFlightRef.current = false;
+      }, 2000);
+      return;
+    }
+
+    const active = localStorage.getItem(ACTIVE_SESSION_KEY) === '1';
+    const owner = readJson<SessionOwnerMeta>(SESSION_OWNER_KEY);
+
+    if (active && owner && owner.tabId !== tabIdRef.current && isOwnerAlive(owner)) {
+      setIsSessionOwner(false);
+      syncFromSharedSnapshot();
+      return;
+    }
+
+    if (!claimOwnership()) {
+      setIsSessionOwner(false);
+      syncFromSharedSnapshot();
+      return;
+    }
+
+    const snapshot = readJson<SharedSessionSnapshot>(SHARED_SESSION_KEY);
+    const restoredData = snapshot?.restoredData ?? readJson<RestoredSessionData>(SESSION_DATA_KEY) ?? undefined;
+    await startOwnedSession(restoredData);
+  }, [claimOwnership, extensionAvailable, isStarting, startOwnedSession, syncFromSharedSnapshot]);
+
+  const stopSession = useCallback(async () => {
+    if (extensionAvailable) {
+      if (extensionCommandInFlightRef.current) return;
+      extensionCommandInFlightRef.current = true;
+      document.documentElement.setAttribute(
+        EXTENSION_COMMAND_ATTRIBUTE,
+        JSON.stringify({ type: 'stop', requestedAt: Date.now() })
+      );
+      window.setTimeout(() => {
+        extensionCommandInFlightRef.current = false;
+      }, 2000);
+      return;
+    }
+
+    if (isSessionOwner) {
+      await stopOwnedSession();
+      return;
+    }
+
     if (!state.isRunning) return;
 
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      // Save current session state immediately before unload
-      const sessionData = {
-        blinkCount: state.blinkCount,
-        longClosureEvents: state.longClosureEvents,
-        blinkHistory: [],
-        savedAt: Date.now(),
-        durationAtSave: state.sessionDurationMinutes,
-      };
-      sessionStorage.setItem(SESSION_DATA_KEY, JSON.stringify(sessionData));
-      console.log(`[Session] Saved state before unload: ${state.blinkCount} blinks, ${state.sessionDurationMinutes.toFixed(1)}min`);
-      
-      // Show browser warning
-      e.preventDefault();
-      e.returnValue = 'You have an active session. Your progress will be saved and restored when you return.';
-      return e.returnValue;
+    localStorage.setItem(SESSION_COMMAND_KEY, JSON.stringify({
+      type: 'stop',
+      requesterTabId: tabIdRef.current,
+      issuedAt: Date.now(),
+    } satisfies SessionCommand));
+  }, [extensionAvailable, isSessionOwner, state.isRunning, stopOwnedSession]);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.storageArea !== localStorage) return;
+
+      if (event.key === SHARED_SESSION_KEY && !isSessionOwner) {
+        if (event.newValue) {
+          const snapshot = readJson<SharedSessionSnapshot>(SHARED_SESSION_KEY);
+          if (snapshot) {
+            setState(snapshot.state);
+          }
+        } else {
+          setState(defaultState);
+        }
+      }
+
+      if (event.key === ACTIVE_SESSION_KEY && event.newValue !== '1' && !isSessionOwner) {
+        setState(defaultState);
+        setSessionSummary(null);
+      }
+
+      if (event.key === SESSION_COMMAND_KEY && isSessionOwner && event.newValue) {
+        const command = readJson<SessionCommand>(SESSION_COMMAND_KEY);
+        if (command?.type === 'stop') {
+          void stopOwnedSession();
+        }
+      }
     };
 
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [state.isRunning, state.blinkCount, state.longClosureEvents, state.sessionDurationMinutes]);
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, [isSessionOwner, stopOwnedSession]);
 
-  // Restore active session on refresh within the same tab.
   useEffect(() => {
     if (restoreAttemptedRef.current) return;
     restoreAttemptedRef.current = true;
 
-    const hasActiveSession = sessionStorage.getItem(ACTIVE_SESSION_KEY) === '1';
-    const hasSessionData = sessionStorage.getItem(SESSION_DATA_KEY);
-    
-    console.log('[Session] === Restoration Check ===');
-    console.log('[Session] hasActiveSession:', hasActiveSession);
-    console.log('[Session] hasSessionData:', hasSessionData);
-    
-    if (!hasActiveSession && !hasSessionData) {
-      console.log('[Session] No active session to restore');
+    if (extensionAvailable) {
       return;
     }
-    
-    if (hasSessionData) {
-      try {
-        const parsedData = JSON.parse(hasSessionData);
-        console.log('[Session] Saved data details:', parsedData);
-      } catch (e) {
-        console.error('[Session] Failed to parse saved data:', e);
-      }
+
+    const active = localStorage.getItem(ACTIVE_SESSION_KEY) === '1';
+    if (!active) return;
+
+    const owner = readJson<SessionOwnerMeta>(SESSION_OWNER_KEY);
+    const hasOwnerElsewhere = owner && owner.tabId !== tabIdRef.current && isOwnerAlive(owner);
+
+    if (syncFromSharedSnapshot() && hasOwnerElsewhere) {
+      setIsSessionOwner(false);
+      handleAlert('info', 'This tab is following your active session from another DevWell tab.');
+      return;
     }
-    
-    console.log('[Session] Detected active session, attempting to restore...');
-    
-    // Show a brief message that session is being restored
-    if (hasSessionData) {
+
+    const snapshot = readJson<SharedSessionSnapshot>(SHARED_SESSION_KEY);
+    const restoredData = snapshot?.restoredData ?? readJson<RestoredSessionData>(SESSION_DATA_KEY) ?? undefined;
+
+    if (restoredData) {
       handleAlert('info', 'Restoring your previous session...');
+      void startSession();
     }
-    
-    void startSession();
-  }, [startSession, handleAlert]);
+  }, [extensionAvailable, handleAlert, startSession, syncFromSharedSnapshot]);
+
+  useEffect(() => {
+    if (!isSessionOwner || !state.isRunning || extensionAvailable) return;
+
+    persistSharedState(stateRef.current);
+    const intervalId = window.setInterval(() => {
+      persistSharedState(stateRef.current);
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [extensionAvailable, isSessionOwner, state.isRunning, persistSharedState]);
+
+  useEffect(() => {
+    if (extensionAvailable) return;
+    if (!state.isRunning || isSessionOwner || isStarting || !user) return;
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== 'visible' || takeoverInFlightRef.current) {
+        return;
+      }
+
+      const owner = readJson<SessionOwnerMeta>(SESSION_OWNER_KEY);
+      if (owner && isOwnerAlive(owner)) {
+        return;
+      }
+
+      const snapshot = readJson<SharedSessionSnapshot>(SHARED_SESSION_KEY);
+      if (!snapshot?.restoredData) {
+        return;
+      }
+
+      if (!claimOwnership()) {
+        return;
+      }
+
+      takeoverInFlightRef.current = true;
+      handleAlert('info', 'This tab is resuming your active session...');
+      void startOwnedSession(snapshot.restoredData).finally(() => {
+        takeoverInFlightRef.current = false;
+      });
+    }, 2000);
+
+    return () => window.clearInterval(intervalId);
+  }, [claimOwnership, handleAlert, isSessionOwner, isStarting, startOwnedSession, state.isRunning, user]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (extensionAvailable) return;
+      if (!isSessionOwner || !stateRef.current.isRunning) return;
+
+      localStorage.setItem(SESSION_DATA_KEY, JSON.stringify(buildRestoredData(stateRef.current)));
+      localStorage.removeItem(SESSION_OWNER_KEY);
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isSessionOwner]);
+
+  useEffect(() => {
+    if (user) return;
+
+    if (engineRef.current) {
+      void stopOwnedSession(false);
+    } else {
+      clearSharedSessionKeys();
+      setState(defaultState);
+      setIsSessionOwner(false);
+      setIsStarting(false);
+    }
+
+    setAlerts([]);
+    setSessionSummary(null);
+  }, [stopOwnedSession, user]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+
+    const applyExternalState = (raw: string | null) => {
+      if (!raw) {
+        setExtensionAvailable(false);
+        setExternalState(null);
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed?.source === 'extension') {
+          setExtensionAvailable(true);
+          setExternalState(parsed.sessionData ?? null);
+          if (parsed.sessionActive) {
+            setIsSessionOwner(false);
+          }
+        }
+      } catch {
+        setExtensionAvailable(false);
+        setExternalState(null);
+      }
+    };
+
+    applyExternalState(document.documentElement.getAttribute(EXTENSION_STATE_ATTRIBUTE));
+
+    const observer = new MutationObserver(() => {
+      applyExternalState(document.documentElement.getAttribute(EXTENSION_STATE_ATTRIBUTE));
+    });
+
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: [EXTENSION_STATE_ATTRIBUTE],
+    });
+
+    const pingId = window.setInterval(() => {
+      if (extensionAvailable) {
+        document.documentElement.setAttribute(
+          EXTENSION_COMMAND_ATTRIBUTE,
+          JSON.stringify({ type: 'ping', requestedAt: Date.now() })
+        );
+      }
+    }, EXTENSION_PING_MS);
+
+    return () => {
+      observer.disconnect();
+      window.clearInterval(pingId);
+    };
+  }, [extensionAvailable]);
 
   const dismissAlert = useCallback((id: number) => {
-    setAlerts(prev => prev.filter(a => a.id !== id));
+    setAlerts((prev) => prev.filter((alert) => alert.id !== id));
   }, []);
 
   const clearSummary = useCallback(() => setSessionSummary(null), []);
 
-  // Periodically save session data to sessionStorage for recovery
-  useEffect(() => {
-    if (!state.isRunning) return;
-
-    const saveInterval = setInterval(() => {
-      const sessionData = {
-        blinkCount: state.blinkCount,
-        longClosureEvents: state.longClosureEvents,
-        blinkHistory: [], // We'll recalculate this on restore
-        // Store the actual session start time (engine tracks this internally)
-        // We need to get this from the engine, but for now we'll calculate it
-        // This will be accurate enough for restoration purposes
-        savedAt: Date.now(),
-        durationAtSave: state.sessionDurationMinutes,
-      };
-      sessionStorage.setItem(SESSION_DATA_KEY, JSON.stringify(sessionData));
-      console.log(`[Session] Auto-saved: ${state.blinkCount} blinks, ${state.sessionDurationMinutes.toFixed(1)}min`);
-    }, 5000); // Save every 5 seconds
-
-    return () => clearInterval(saveInterval);
-  }, [state.isRunning, state.blinkCount, state.longClosureEvents, state.sessionDurationMinutes]);
+  const effectiveState = externalState ?? state;
 
   return (
     <SessionContext.Provider value={{
-      state, alerts, sessionSummary, saving, videoRef, isStarting,
-      startSession, stopSession, dismissAlert, clearSummary,
+      state: effectiveState,
+      alerts,
+      sessionSummary,
+      saving,
+      videoRef,
+      isStarting,
+      isSessionOwner: !extensionAvailable && isSessionOwner,
+      startSession,
+      stopSession,
+      dismissAlert,
+      clearSummary,
     }}>
       {children}
       <video

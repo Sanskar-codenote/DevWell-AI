@@ -29,7 +29,7 @@ function getFatigueRingColor(score: number): string {
 
 export default function DashboardPage() {
   const {
-    state, alerts, sessionSummary, saving, videoRef, isStarting,
+    state, alerts, sessionSummary, saving, videoRef, isStarting, isSessionOwner,
     startSession, stopSession, dismissAlert, clearSummary,
   } = useSession();
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -39,7 +39,7 @@ export default function DashboardPage() {
     const processingVideo = videoRef.current;
     if (!preview || !processingVideo) return;
 
-    if (!state.isRunning) {
+    if (!state.isRunning || !isSessionOwner) {
       preview.srcObject = null;
       return;
     }
@@ -51,7 +51,7 @@ export default function DashboardPage() {
     void preview.play().catch(() => {
       // Playback can fail transiently during route transitions; session processing continues.
     });
-  }, [state.isRunning, videoRef]);
+  }, [isSessionOwner, state.isRunning, videoRef]);
 
   const circumference = 2 * Math.PI * 54;
   const strokeOffset = circumference - (state.fatigueScore / 100) * circumference;
@@ -163,7 +163,7 @@ export default function DashboardPage() {
             <div className="relative flex-1 min-h-[240px] bg-black/40 rounded-xl overflow-hidden flex items-center justify-center">
               <video
                 ref={previewVideoRef}
-                className={`w-full h-full object-cover rounded-xl ${state.isRunning ? 'block' : 'hidden'}`}
+                className={`w-full h-full object-cover rounded-xl ${state.isRunning && isSessionOwner ? 'block' : 'hidden'}`}
                 playsInline
                 muted
                 style={{ transform: 'scaleX(-1)' }}
@@ -175,10 +175,17 @@ export default function DashboardPage() {
                   <p className="text-xs text-slate-600 mt-1">Start a session to begin monitoring</p>
                 </div>
               )}
+              {state.isRunning && !isSessionOwner && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 rounded-xl z-10">
+                  <Eye className="h-10 w-10 text-cyan-400 mb-3" />
+                  <p className="text-sm text-slate-200">Session active in another tab</p>
+                  <p className="text-xs text-slate-400 mt-1">This tab is mirroring the shared DevWell session</p>
+                </div>
+              )}
               {state.isRunning && (
                 <div className="absolute top-3 left-3 flex items-center gap-2 bg-black/60 backdrop-blur px-2.5 py-1 rounded-lg z-10">
                   <div className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
-                  <span className="text-xs text-white font-medium">LIVE</span>
+                  <span className="text-xs text-white font-medium">{isSessionOwner ? 'LIVE' : 'SYNC'}</span>
                 </div>
               )}
             </div>
