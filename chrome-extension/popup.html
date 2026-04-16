@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DevWell AI</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div class="logo">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+        </svg>
+        <h1>DevWell AI</h1>
+      </div>
+      <div class="status-indicator" id="statusIndicator">
+        <span class="status-dot"></span>
+        <span class="status-text">Website Idle</span>
+      </div>
+    </header>
+    
+    <div id="loginSection" class="login-section">
+      <h2>Welcome to DevWell AI</h2>
+      <p class="login-subtitle">Please log in to start monitoring your wellness.</p>
+      
+      <form id="loginForm" class="login-form">
+        <div class="form-group">
+          <label for="email">Email</label>
+          <input type="email" id="email" placeholder="demo@devwell.ai" required>
+        </div>
+        <div class="form-group">
+          <label for="password">Password</label>
+          <input type="password" id="password" placeholder="••••••••" required>
+        </div>
+        <button type="submit" id="loginBtn" class="btn btn-primary">Log In</button>
+      </form>
+      
+      <div class="login-footer">
+        <p>Demo account: demo@devwell.ai / demo123</p>
+      </div>
+    </div>
+
+    <div id="dashboardSection" class="dashboard-section" style="display: none;">
+      <div class="session-controls">
+        <button id="sessionBtn" class="btn btn-primary">Start Session</button>
+        <button id="logoutBtn" class="btn btn-outline btn-sm">Log Out</button>
+      </div>
+      
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-label">Session Time</div>
+          <div class="metric-value" id="sessionTime">00:00</div>
+        </div>
+        
+        <div class="metric-card">
+          <div class="metric-label">Blink Rate</div>
+          <div class="metric-value" id="blinkRate">0/min</div>
+        </div>
+        
+        <div class="metric-card">
+          <div class="metric-label">Total Blinks</div>
+          <div class="metric-value" id="totalBlinks">0</div>
+        </div>
+        
+        <div class="metric-card">
+          <div class="metric-label">Drowsy Events</div>
+          <div class="metric-value" id="drowsyEvents">0</div>
+        </div>
+      </div>
+
+      <div class="fatigue-section">
+        <div class="fatigue-header">
+          <h3>Fatigue Score</h3>
+          <span class="fatigue-level" id="fatigueLevel">Fresh</span>
+        </div>
+        
+        <div class="fatigue-progress">
+          <div class="progress-bar">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+          <div class="progress-value" id="fatigueScore">0</div>
+        </div>
+      </div>
+
+      <div class="alerts-section" id="alertsSection">
+        <h3>Recent Alerts</h3>
+        <div id="alertsList" class="alerts-list">
+          <div class="alert-empty">No alerts yet</div>
+        </div>
+      </div>
+
+      <div class="footer">
+        <button id="openDashboardBtn" class="btn btn-outline">Open Dashboard</button>
+        <button id="viewAnalyticsBtn" class="btn btn-outline">View Analytics</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -62,7 +62,7 @@ interface SessionContextType {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   isStarting: boolean;
   isSessionOwner: boolean;
-  startSession: () => Promise<void>;
+  startSession: (visibleVideoEl?: HTMLVideoElement) => Promise<void>;
   stopSession: () => Promise<void>;
   dismissAlert: (id: number) => void;
   clearSummary: () => void;
@@ -141,6 +141,39 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  // Clean up orphaned streams on mount (page reload)
+  useEffect(() => {
+    const active = localStorage.getItem(ACTIVE_SESSION_KEY) === '1';
+    
+    // Wait for video element to be mounted
+    const cleanupTimer = setTimeout(() => {
+      if (!videoRef.current) return;
+      
+      // If there's no active session flag but video has a stream, clean it up
+      if (!active && videoRef.current.srcObject) {
+        const stream = videoRef.current.srcObject as MediaStream;
+        stream.getTracks().forEach(track => track.stop());
+        videoRef.current.srcObject = null;
+      }
+
+      // If there's an active session but we're not the owner (page reload scenario),
+      // clean up any leftover streams
+      if (active && videoRef.current.srcObject) {
+        const owner = readJson<SessionOwnerMeta>(SESSION_OWNER_KEY);
+        const isOwner = owner?.tabId === tabIdRef.current;
+        
+        if (!isOwner) {
+          // We're not the owner, so clean up any orphaned stream
+          const stream = videoRef.current.srcObject as MediaStream;
+          stream.getTracks().forEach(track => track.stop());
+          videoRef.current.srcObject = null;
+        }
+      }
+    }, 100);
+
+    return () => clearTimeout(cleanupTimer);
+  }, []);
 
   const playHighFatigueSound = useCallback(() => {
     if (typeof window === 'undefined') return;
@@ -281,6 +314,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     const summary = engineRef.current.stop();
     engineRef.current = null;
+    
+    // Clean up the persistent video stream
+    if (videoRef.current && videoRef.current.srcObject) {
+      (videoRef.current.srcObject as MediaStream).getTracks().forEach(track => track.stop());
+      videoRef.current.srcObject = null;
+    }
+    
     clearSharedSessionKeys();
     setState(defaultState);
     setSessionSummary(summary);
@@ -315,7 +355,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return true;
   }, []);
 
-  const startSession = useCallback(async () => {
+  const startSession = useCallback(async (visibleVideoEl?: HTMLVideoElement) => {
     if (isStarting) return;
 
     if (extensionAvailable) {
@@ -348,7 +388,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     const snapshot = readJson<SharedSessionSnapshot>(SHARED_SESSION_KEY);
     const restoredData = snapshot?.restoredData ?? readJson<RestoredSessionData>(SESSION_DATA_KEY) ?? undefined;
-    await startOwnedSession(restoredData);
+    const success = await startOwnedSession(restoredData);
+    
+    // Sync stream to visible video element if provided
+    if (success && visibleVideoEl && videoRef.current?.srcObject) {
+      visibleVideoEl.srcObject = videoRef.current.srcObject;
+    }
   }, [claimOwnership, extensionAvailable, isStarting, startOwnedSession, syncFromSharedSnapshot]);
 
   const stopSession = useCallback(async () => {
@@ -431,14 +476,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    // Page reload scenario: we were the owner but page was reloaded
+    // The session data exists but the FatigueEngine instance is lost
+    // We need to clean up and let the user restart manually
     const snapshot = readJson<SharedSessionSnapshot>(SHARED_SESSION_KEY);
     const restoredData = snapshot?.restoredData ?? readJson<RestoredSessionData>(SESSION_DATA_KEY) ?? undefined;
 
     if (restoredData) {
-      handleAlert('info', 'Restoring your previous session...');
-      void startSession();
+      // Clean up orphaned session - user needs to restart manually
+      handleAlert('info', 'Previous session was interrupted. Please start a new session.');
+      clearSharedSessionKeys();
+      setState(defaultState);
+      setIsSessionOwner(false);
     }
-  }, [extensionAvailable, handleAlert, startSession, syncFromSharedSnapshot]);
+  }, [extensionAvailable, handleAlert, syncFromSharedSnapshot]);
 
   useEffect(() => {
     if (!isSessionOwner || !state.isRunning || extensionAvailable) return;
@@ -525,13 +576,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
       try {
         const parsed = JSON.parse(raw);
-        if (parsed?.source === 'extension') {
+        if (parsed?.source === 'extension' && parsed?.engine === 'extension') {
           setExtensionAvailable(true);
           setExternalState(parsed.sessionData ?? null);
           if (parsed.sessionActive) {
             setIsSessionOwner(false);
           }
+          return;
         }
+        setExtensionAvailable(false);
+        setExternalState(null);
       } catch {
         setExtensionAvailable(false);
         setExternalState(null);

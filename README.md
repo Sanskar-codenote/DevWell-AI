@@ -92,7 +92,7 @@ DevWell/
    - Long closure events (drowsiness) tracked
    - Fatigue score computed continuously
 7. **Live Dashboard** - Metrics updated in real-time
-8. **Session Persistence** - Auto-saves every 5 seconds to sessionStorage
+8. **Persistent Session** - Session continues across route changes (Dashboard → Analytics)
 9. **End Session** - Summary posted to backend (`POST /api/v1/sessions`)
 10. **Analytics** - Weekly/monthly aggregates loaded from backend
 
@@ -162,28 +162,35 @@ The `FatigueEngine` class (`frontend/src/lib/fatigueEngine.ts`) implements:
 
 #### Session Persistence & Recovery
 
-The app automatically saves session data every **5 seconds** to `sessionStorage`:
+**Persistent Video Architecture:**
 
-- ✅ Blink count
-- ✅ Long closure events
-- ✅ Session start time
-- ✅ Session duration
+The app uses a persistent hidden video element in the SessionContext that survives route changes:
+
+- ✅ **Route Change Resilience**: Session continues when navigating between Dashboard and Analytics
+- ✅ **Stream Sharing**: The hidden video element processes frames; dashboard preview syncs to it
+- ✅ **No Interruption**: Blink counting and fatigue detection continue across all tabs
 
 **Recovery Scenarios:**
 
 | Scenario | Behavior |
 |----------|----------|
-| **Browser Refresh (F5)** | Session fully restored with all metrics |
-| **Accidental Tab Close** | Warning popup + session saved for recovery |
-| **Browser Crash** | Session auto-saved, minimal data loss |
-| **Navigation Away** | Warning before leaving during active session |
+| **Browser Refresh (F5)** | Session cleaned up, user prompted to start new session |
+| **Navigation to Analytics** | Session continues running in background |
+| **Return to Dashboard** | Preview syncs back to persistent stream |
+| **Browser Crash** | Session data cleared on next load |
 
-**Restoration Process:**
+**Restoration Process on Page Reload:**
 1. On page load, checks for `devwell_active_session` flag
-2. Loads saved session data from `devwell_session_data`
-3. Restores engine state (blink count, timing, etc.)
-4. Shows "Restoring your previous session..." message
-5. Continues session seamlessly
+2. Detects orphaned session from page reload
+3. Cleans up any leftover MediaStream tracks (turns off camera)
+4. Shows "Previous session was interrupted. Please start a new session." message
+5. Clears orphaned session data from localStorage
+6. User can start a fresh session
+
+**Why Auto-Restart Is Not Possible:**
+- Browser security policies require user interaction to start webcam
+- FatigueEngine instance is lost on page reload
+- MediaStream cannot be re-created without explicit user action
 
 **Security - Cross-User Data Protection:**
 
@@ -640,7 +647,8 @@ SELECT id, email, created_at FROM users;
 - **Camera Quality**: Low-resolution webcams may reduce landmark precision
 - **Browser Compatibility**: Requires modern browser with WebGL support
 - **Single Face**: Only tracks one face at a time
-- **Session Scope**: Session data is tab-specific (sessionStorage)
+- **Page Reload**: Session cannot auto-resume after page reload (browser security policy)
+- **Single Tab Ownership**: Only one tab can own the session at a time
 
 ## 🐛 Troubleshooting
 
@@ -660,10 +668,19 @@ SELECT id, email, created_at FROM users;
 
 ### Session Not Restoring
 
-1. Check browser console for errors
-2. Verify sessionStorage is not disabled
-3. Try in incognito/private mode
-4. Clear all site data and restart
+This is expected behavior. When you reload the page:
+- The session is intentionally cleaned up
+- Camera is turned off to prevent orphaned streams
+- You need to click "Start Session" again
+- This is due to browser security policies requiring user interaction for camera access
+
+### Camera Still On After Page Reload
+
+If the camera light remains on after reloading:
+1. This was a bug that has been fixed
+2. The app now automatically cleans up orphaned streams on mount
+3. If it still happens, check browser console for errors
+4. Manually stop the camera in browser settings
 
 ### High Fatigue False Positives
 
@@ -697,6 +714,84 @@ For issues or questions:
 - Check the troubleshooting section above
 - Review browser console for error messages
 - Verify all environment variables are set correctly
+
+---
+
+## 🏗️ Architecture Notes
+
+### Persistent Video Element Pattern
+
+The app implements a persistent video element pattern to maintain sessions across route changes:
+
+```
+SessionContext (Provider)
+├── Hidden videoRef (persistent, off-screen)
+│   ├── Used by FatigueEngine for processing
+│   └── Survives route changes
+│
+└── DashboardPage
+    └── Preview video element (visible)
+        └── Syncs stream from videoRef when session active
+```
+
+**How It Works:**
+
+1. **SessionContext** renders a hidden video element (positioned off-screen)
+2. When session starts, FatigueEngine uses this persistent video for frame processing
+3. **DashboardPage** has a visible preview video element
+4. A `useEffect` in DashboardPage syncs the stream from hidden to visible video
+5. When navigating to Analytics, Dashboard unmounts but hidden video continues
+6. FatigueEngine keeps processing frames and counting blinks
+7. When returning to Dashboard, preview syncs back to the stream
+
+**Benefits:**
+- ✅ Session continues across all routes
+- ✅ No interruption in blink detection
+- ✅ Camera doesn't restart on route change
+- ✅ Single source of truth for video stream
+
+### Session Lifecycle
+
+```
+Start Session
+    ↓
+Create MediaStream
+    ↓
+Assign to hidden videoRef
+    ↓
+FatigueEngine processes frames
+    ↓
+Sync stream to dashboard preview
+    ↓
+[User navigates to Analytics]
+    ↓
+Dashboard unmounts (preview lost)
+    ↓
+Hidden videoRef continues processing
+    ↓
+[User returns to Dashboard]
+    ↓
+Preview syncs to videoRef stream
+    ↓
+End Session
+    ↓
+Stop all tracks, clean up
+```
+
+### Page Reload Behavior
+
+On page reload, the app:
+
+1. **Detects orphaned session** in localStorage
+2. **Cleans up MediaStream** tracks (turns off camera)
+3. **Clears session data** to prevent stale state
+4. **Shows info message** to user
+5. **Requires manual restart** (browser security policy)
+
+This prevents:
+- Orphaned camera streams running in background
+- UI state mismatch (camera on, but UI shows stopped)
+- Attempting to use lost FatigueEngine instances
 
 ---
 

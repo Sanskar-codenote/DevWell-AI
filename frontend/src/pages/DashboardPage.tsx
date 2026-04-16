@@ -53,6 +53,14 @@ export default function DashboardPage() {
     });
   }, [isSessionOwner, state.isRunning, videoRef]);
 
+  const handleStartSession = () => {
+    if (previewVideoRef.current) {
+      startSession(previewVideoRef.current);
+    } else {
+      startSession();
+    }
+  };
+
   const circumference = 2 * Math.PI * 54;
   const strokeOffset = circumference - (state.fatigueScore / 100) * circumference;
 
@@ -66,7 +74,7 @@ export default function DashboardPage() {
         </div>
         {!state.isRunning ? (
           <button
-            onClick={startSession}
+            onClick={handleStartSession}
             disabled={isStarting}
             className={`flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 font-semibold rounded-xl transition-all text-sm cursor-pointer ${
               isStarting ? 'opacity-70 cursor-not-allowed' : ''

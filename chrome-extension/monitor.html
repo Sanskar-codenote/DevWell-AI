@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>DevWell Monitor</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: #282c34;
+      color: #abb2bf;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      text-align: center;
+    }
+    h1 {
+      font-size: 24px;
+      margin-bottom: 1rem;
+      color: #61afef;
+    }
+    p {
+      color: #98c379;
+    }
+    #video-container {
+        border: 2px solid #61afef;
+        border-radius: 8px;
+        overflow: hidden;
+        position: relative;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+    }
+    video {
+      display: block;
+      transform: scaleX(-1); /* Mirror view for natural movement */
+      background: #000;
+    }
+  </style>
+</head>
+<body>
+  <h1>DevWell Session Active</h1>
+  <p>Fatigue monitoring is running. You can minimize this tab.</p>
+  <div id="video-container">
+    <video id="webcam" autoplay muted playsinline width="640" height="480"></video>
+  </div>
+  <script type="module" src="monitor.js"></script>
+</body>
+</html>
