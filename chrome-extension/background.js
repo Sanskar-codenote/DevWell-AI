@@ -15,7 +15,10 @@ class DevWellBackground {
     this.lastFatigueAlertAt = 0;
     this.lastBreakReminderBucket = 0;
     this.extensionAuth = { token: null, email: null };
+    this.websiteAuth = { loggedIn: false, email: null };
     this.monitorTabId = null;
+    this.isFinalizingSession = false;
+    this.isClosingMonitorTab = false;
 
     void this.init();
   }
@@ -45,12 +48,20 @@ class DevWellBackground {
     // Listener to detect when the monitor tab is closed by the user
     chrome.tabs.onRemoved.addListener((tabId) => {
       if (tabId === this.monitorTabId) {
-        console.log('[DevWell Background] Monitor tab closed by user.');
-        // We treat this as a session stop event
-        if (this.sessionActive) {
-          void this.handleMessage({ action: 'monitorStopped', data: this.sessionData });
-        }
+        const wasProgrammaticClose = this.isClosingMonitorTab;
+        this.isClosingMonitorTab = false;
         this.monitorTabId = null;
+        void chrome.storage.local.set({ monitorTabId: null });
+
+        if (wasProgrammaticClose) {
+          console.log('[DevWell Background] Monitor tab closed programmatically.');
+          return;
+        }
+
+        console.log('[DevWell Background] Monitor tab closed by user.');
+        if (this.sessionActive || this.sessionData) {
+          void this.finalizeSession(this.sessionData, { reason: 'Monitor tab was closed' });
+        }
       }
     });
 
@@ -64,6 +75,7 @@ class DevWellBackground {
       'sessionData',
       'alerts',
       'extensionAuth',
+      'websiteAuth',
       'monitorTabId'
     ]);
 
@@ -71,6 +83,7 @@ class DevWellBackground {
     this.sessionData = result.sessionData ?? null;
     this.alerts = Array.isArray(result.alerts) ? result.alerts : [];
     this.extensionAuth = result.extensionAuth ?? this.extensionAuth;
+    this.websiteAuth = result.websiteAuth ?? this.websiteAuth;
     this.monitorTabId = result.monitorTabId ?? null;
     this.lastBreakReminderBucket = Math.floor((this.sessionData?.sessionDurationMinutes ?? 0) / 20);
 
@@ -83,7 +96,7 @@ class DevWellBackground {
     if (this.monitorTabId) {
         try {
             await chrome.tabs.get(this.monitorTabId);
-        } catch (e) {
+        } catch {
             // The tab doesn't exist anymore, session must have been interrupted
             console.log('[DevWell Background] Monitor tab not found on startup, resetting session.');
             this.monitorTabId = null;
@@ -114,6 +127,127 @@ class DevWellBackground {
     }
   }
 
+  formatSessionDetails(data) {
+    if (!data) return 'No session metrics were available.';
+    const duration = Number(data.sessionDurationMinutes ?? 0).toFixed(1);
+    const blinks = Number(data.blinkCount ?? 0);
+    const avgBlinkRate = Number(data.sessionAvgBlinkRate ?? 0);
+    const fatigue = Number(data.fatigueScore ?? 0);
+    return `Duration ${duration}m | Blinks ${blinks} | Avg ${avgBlinkRate}/min | Fatigue ${fatigue}`;
+  }
+
+  getAuthMismatchMessage() {
+    if (!this.extensionAuth?.token) return null;
+    if (!this.websiteAuth?.loggedIn) return null;
+
+    const extensionEmail = String(this.extensionAuth?.email ?? '').trim().toLowerCase();
+    const websiteEmail = String(this.websiteAuth?.email ?? '').trim().toLowerCase();
+    if (!extensionEmail || !websiteEmail) return null;
+    if (extensionEmail === websiteEmail) return null;
+
+    return `Account mismatch: website is logged in as ${websiteEmail}, extension is logged in as ${extensionEmail}. Please use the same account.`;
+  }
+
+  async closeMonitorTab() {
+    if (!this.monitorTabId) return;
+    const tabId = this.monitorTabId;
+    this.isClosingMonitorTab = true;
+    try {
+      await chrome.tabs.remove(tabId);
+    } catch (error) {
+      console.log('[DevWell Background] Monitor tab may already be closed:', error);
+      this.isClosingMonitorTab = false;
+      if (this.monitorTabId === tabId) {
+        this.monitorTabId = null;
+        await chrome.storage.local.set({ monitorTabId: null });
+      }
+    }
+  }
+
+  async saveSessionToBackend(sessionData) {
+    if (!sessionData) {
+      return { saved: false, reason: 'no_data' };
+    }
+
+    if (!this.extensionAuth?.token) {
+      return { saved: false, reason: 'not_logged_in' };
+    }
+
+    const payload = {
+      session_date: new Date().toISOString(),
+      duration_minutes: sessionData.sessionDurationMinutes || 0,
+      avg_blink_rate: sessionData.sessionAvgBlinkRate || 0,
+      fatigue_score: sessionData.fatigueScore || 0,
+      long_closure_events: sessionData.longClosureEvents || 0
+    };
+
+    try {
+      const res = await fetch('http://localhost:3001/api/v1/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.extensionAuth.token}` },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        console.error('[DevWell Background] Failed to save session:', res.status, res.statusText);
+        return { saved: false, reason: 'request_failed', status: res.status };
+      }
+
+      console.log('[DevWell Background] Session successfully saved to database.');
+      return { saved: true };
+    } catch (err) {
+      console.error('[DevWell Background] Error saving session to database:', err);
+      return { saved: false, reason: 'network_error' };
+    }
+  }
+
+  async finalizeSession(finalData, { reason = 'Session ended' } = {}) {
+    if (this.isFinalizingSession) {
+      return { success: true };
+    }
+
+    if (!this.sessionActive && !this.sessionData && !finalData) {
+      return { success: true };
+    }
+
+    this.isFinalizingSession = true;
+    try {
+      this.sessionActive = false;
+      this.stopSessionTimer();
+      this.lastBreakReminderBucket = 0;
+
+      const sessionSnapshot = finalData ?? this.sessionData;
+      await this.closeMonitorTab();
+
+      const details = this.formatSessionDetails(sessionSnapshot);
+      const saveResult = await this.saveSessionToBackend(sessionSnapshot);
+      if (saveResult.saved) {
+        await this.pushAlert('session_saved', `Session saved. ${details}`);
+      } else if (saveResult.reason === 'not_logged_in') {
+        await this.pushAlert('session_local_only', `Session ended (not saved: login required). ${details}`);
+      } else if (sessionSnapshot) {
+        await this.pushAlert('session_save_failed', `Session ended (save failed). ${details}`);
+      } else {
+        await this.pushAlert('session_ended', `${reason}.`);
+      }
+
+      this.sessionData = null;
+      this.monitorTabId = null;
+      await chrome.storage.local.set({
+        sessionActive: false,
+        sessionData: null,
+        sessionError: null,
+        monitorTabId: null
+      });
+
+      this.updateBadge();
+      await this.broadcastState();
+      return { success: true };
+    } finally {
+      this.isFinalizingSession = false;
+    }
+  }
+
   async handleMessage(message) {
     switch (message?.action) {
       case 'getSessionState':
@@ -121,11 +255,18 @@ class DevWellBackground {
 
       case 'requestStartSession':
         if (!this.extensionAuth?.token) return { success: false, error: 'User not logged in' };
+        {
+          const mismatch = this.getAuthMismatchMessage();
+          if (mismatch) {
+            await this.pushAlert('auth_mismatch', mismatch);
+            return { success: false, error: mismatch };
+          }
+        }
         if (this.monitorTabId) {
             try { // Focus existing tab
                 await chrome.tabs.update(this.monitorTabId, { active: true });
                 return { success: true };
-            } catch (e) { /* tab doesn't exist, proceed to create */ }
+            } catch { /* tab doesn't exist, proceed to create */ }
         }
         await chrome.storage.local.set({ sessionError: null });
         
@@ -136,16 +277,12 @@ class DevWellBackground {
 
       case 'requestStopSession':
         if (this.monitorTabId) {
-            // Send a message to the tab first to gracefully stop streams
-            await chrome.tabs.sendMessage(this.monitorTabId, { action: 'stop' }).catch(e => console.log('Monitor tab might already be closing.'));
-            // The onRemoved listener will handle the rest of the cleanup.
-            try {
-                await chrome.tabs.remove(this.monitorTabId);
-            } catch (e) {
-                console.log('Error removing tab, maybe already closed:', e);
-            }
+          // Ask monitor to stop camera streams gracefully before closing.
+          await chrome.tabs.sendMessage(this.monitorTabId, { action: 'stop' }).catch((e) => {
+            console.log('[DevWell Background] Monitor tab might already be closing.', e);
+          });
         }
-        return { success: true };
+        return this.finalizeSession(this.sessionData, { reason: 'Session stopped from extension popup' });
 
       case 'monitorStarted':
         this.sessionActive = true;
@@ -170,47 +307,15 @@ class DevWellBackground {
         return { success: true };
 
       case 'monitorStopped':
-        this.sessionActive = false;
-        this.stopSessionTimer();
-        this.sessionData = message.data ?? this.sessionData;
-        this.lastBreakReminderBucket = 0;
-        
-        if (this.sessionData && this.extensionAuth?.token) {
-          const payload = {
-            session_date: new Date().toISOString(),
-            duration_minutes: this.sessionData.sessionDurationMinutes || 0,
-            avg_blink_rate: this.sessionData.sessionAvgBlinkRate || 0,
-            fatigue_score: this.sessionData.fatigueScore || 0,
-            long_closure_events: this.sessionData.longClosureEvents || 0
-          };
-          fetch('http://localhost:3001/api/v1/sessions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.extensionAuth.token}` },
-            body: JSON.stringify(payload)
-          }).then(res => {
-            if (!res.ok) console.error('[DevWell Background] Failed to save session:', res.statusText);
-            else console.log('[DevWell Background] Session successfully saved to database.');
-          }).catch(err => console.error('[DevWell Background] Error saving session to database:', err));
-        }
-
-        this.sessionData = null;
-        this.monitorTabId = null;
-        await chrome.storage.local.set({ sessionActive: false, sessionData: null, sessionError: null, monitorTabId: null });
-        
-        this.updateBadge();
-        await this.broadcastState();
-        return { success: true };
+        return this.finalizeSession(message.data ?? this.sessionData, { reason: 'Session stopped by monitor' });
 
       case 'monitorError':
         this.sessionActive = false;
         this.stopSessionTimer();
         await chrome.storage.local.set({ sessionActive: false, sessionError: message?.error || 'Monitor tab error' });
         console.error('[DevWell Background] Monitor tab error:', message.error);
-        // The monitor tab itself will display the error, so we don't need to open another page.
-        // We just need to close the failed tab if it's still open.
-        if (this.monitorTabId) {
-            try { await chrome.tabs.remove(this.monitorTabId); } catch(e) {}
-        }
+        await this.pushAlert('session_error', `Session stopped due to error: ${message?.error || 'Unknown monitor error'}`);
+        await this.closeMonitorTab();
         this.monitorTabId = null;
         this.updateBadge();
         await this.broadcastState();
@@ -230,7 +335,12 @@ class DevWellBackground {
       if (!this.extensionAuth.token && this.sessionActive) {
         await this.handleMessage({ action: 'requestStopSession' });
       }
+      if (!this.extensionAuth.token) {
+        this.alerts = [];
+        await chrome.storage.local.set({ alerts: [] });
+      }
     }
+    if (changes.websiteAuth) this.websiteAuth = changes.websiteAuth.newValue ?? this.websiteAuth;
     this.updateBadge();
     if (changes.sessionActive || changes.sessionData) {
       await this.broadcastState();
@@ -258,7 +368,7 @@ class DevWellBackground {
 
   async pushAlert(type, message) {
     const nextAlert = { type, message, timestamp: Date.now() };
-    this.alerts = [...this.alerts.slice(-49), nextAlert];
+    this.alerts = [...this.alerts.slice(-4), nextAlert];
     await chrome.storage.local.set({ alerts: this.alerts });
     chrome.notifications.create(`devwell-${nextAlert.timestamp}`, {
       type: 'basic',

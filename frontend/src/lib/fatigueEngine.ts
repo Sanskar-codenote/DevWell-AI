@@ -1,6 +1,3 @@
-// Fatigue detection engine using MediaPipe FaceMesh
-// All processing happens client-side for privacy
-
 export interface FatigueState {
   blinkCount: number;
   currentBlinkRate: number;
@@ -44,8 +41,12 @@ interface FaceMeshInstance {
   }) => void;
   onResults: (callback: (results: FaceMeshResults) => void) => void;
   initialize: () => Promise<void>;
-  send: (input: { image: HTMLVideoElement }) => Promise<void>;
+  send: (input: { image: CanvasImageSource }) => Promise<void>;
   close: () => void;
+}
+
+interface ImageCaptureLike {
+  grabFrame: () => Promise<ImageBitmap>;
 }
 
 interface FaceMeshConstructor {
@@ -112,7 +113,11 @@ export class FatigueEngine {
   private lastBreakAlert = 0;
   private animationFrameId: number | null = null;
   private heartbeatIntervalId: number | null = null;
+  private backgroundFallbackId: number | null = null; // For background tab processing
+  private hiddenFrameLoopActive = false;
   private running = false;
+  private isTabVisible = true; // Track tab visibility
+  private wakeLock: WakeLockSentinel | null = null; // Keep screen awake
   private lastFatigueAlertAt = 0;
   private earThreshold = DEFAULT_EAR_THRESHOLD;
   private openEARBaseline = 0;
@@ -122,10 +127,163 @@ export class FatigueEngine {
   private unknownStateStartAt = 0;
   private openStateStartAt = 0;
   private lastBlinkAt = 0;
+  private processingCanvas: HTMLCanvasElement | null = null;
+  private processingCtx: CanvasRenderingContext2D | null = null;
+  private imageCapture: ImageCaptureLike | null = null;
 
   constructor(onUpdate: FatigueCallback, onAlert: AlertCallback) {
     this.onFatigueUpdate = onUpdate;
     this.onAlert = onAlert;
+    
+    if (typeof document !== 'undefined') {
+      this.processingCanvas = document.createElement('canvas');
+      this.processingCanvas.width = 640;
+      this.processingCanvas.height = 480;
+      this.processingCtx = this.processingCanvas.getContext('2d', { willReadFrequently: true });
+      document.addEventListener('visibilitychange', () => {
+        this.isTabVisible = document.visibilityState === 'visible';
+
+        if (this.isTabVisible) {
+          console.log('[DevWell] Tab is now visible, resuming normal processing');
+          if (this.running) {
+            void this.requestWakeLock();
+          }
+        } else {
+          console.log('[DevWell] Tab is hidden, switching to background mode');
+        }
+
+        if (this.running) {
+          this.scheduleNextFrame();
+        }
+      });
+    }
+  }
+
+  private async requestWakeLock(): Promise<void> {
+    try {
+      if ('wakeLock' in navigator) {
+        this.wakeLock = await navigator.wakeLock.request('screen');
+        console.log('[DevWell] Wake Lock acquired');
+        
+        this.wakeLock.addEventListener('release', () => {
+          console.log('[DevWell] Wake Lock released');
+        });
+      }
+    } catch (err) {
+      console.warn('[DevWell] Failed to acquire Wake Lock:', err);
+    }
+  }
+
+  private releaseWakeLock(): void {
+    if (this.wakeLock) {
+      this.wakeLock.release();
+      this.wakeLock = null;
+    }
+  }
+
+  private clearFrameLoopHandles(): void {
+    if (this.animationFrameId) {
+      cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
+    }
+    if (this.backgroundFallbackId) {
+      clearTimeout(this.backgroundFallbackId);
+      this.backgroundFallbackId = null;
+    }
+  }
+
+  private scheduleNextFrame(): void {
+    if (!this.running) return;
+
+    this.clearFrameLoopHandles();
+
+    if (!this.isTabVisible && this.imageCapture) {
+      if (!this.hiddenFrameLoopActive) {
+        void this.runHiddenFrameLoop();
+      }
+      return;
+    }
+
+    if (this.isTabVisible) {
+      this.animationFrameId = requestAnimationFrame(() => this.processFrame());
+      return;
+    }
+
+    // Fallback mode when ImageCapture is unavailable.
+    this.backgroundFallbackId = window.setTimeout(() => this.processFrame(), 50);
+  }
+
+  private checkBreakReminder(now: number): void {
+    if (now - this.lastBreakAlert >= BREAK_INTERVAL_MS) {
+      this.lastBreakAlert = now;
+      this.onAlert('break', 'Time for a break! Follow the 20-20-20 rule: Look at something 20 feet away for 20 seconds.');
+    }
+  }
+
+  private createImageCapture(stream: MediaStream): ImageCaptureLike | null {
+    const track = stream.getVideoTracks()[0];
+    if (!track || typeof window === 'undefined') return null;
+
+    const ImageCaptureCtor = (window as unknown as {
+      ImageCapture?: new (track: MediaStreamTrack) => ImageCaptureLike;
+    }).ImageCapture;
+
+    if (!ImageCaptureCtor) return null;
+
+    try {
+      return new ImageCaptureCtor(track);
+    } catch (err) {
+      console.warn('[DevWell] ImageCapture unavailable for this camera track:', err);
+      return null;
+    }
+  }
+
+  private async sendFrameForDetection(image: CanvasImageSource): Promise<void> {
+    if (!this.faceMesh) return;
+    await this.faceMesh.send({ image });
+  }
+
+  private async runHiddenFrameLoop(): Promise<void> {
+    if (
+      this.hiddenFrameLoopActive ||
+      !this.running ||
+      this.isTabVisible ||
+      !this.imageCapture
+    ) {
+      return;
+    }
+
+    this.hiddenFrameLoopActive = true;
+
+    try {
+      while (this.running && !this.isTabVisible && this.imageCapture) {
+        try {
+          const bitmap = await this.imageCapture.grabFrame();
+          try {
+            if (this.processingCtx && this.processingCanvas) {
+              this.processingCtx.drawImage(bitmap, 0, 0, this.processingCanvas.width, this.processingCanvas.height);
+              await this.sendFrameForDetection(this.processingCanvas);
+            } else {
+              await this.sendFrameForDetection(bitmap);
+            }
+          } finally {
+            bitmap.close();
+          }
+        } catch (error) {
+          console.warn('[DevWell] Hidden frame capture failed, switching to timer fallback:', error);
+          this.imageCapture = null;
+          break;
+        }
+
+        this.checkBreakReminder(Date.now());
+        await Promise.resolve();
+      }
+    } finally {
+      this.hiddenFrameLoopActive = false;
+      if (this.running) {
+        this.scheduleNextFrame();
+      }
+    }
   }
 
   async start(videoElement: HTMLVideoElement, restoredData?: RestoredSessionData): Promise<void> {
@@ -173,6 +331,8 @@ export class FatigueEngine {
       this.openStateStartAt = 0;
       this.lastBlinkAt = 0;
       this.lastFatigueAlertAt = 0;
+      this.hiddenFrameLoopActive = false;
+      this.imageCapture = null;
       // Load FaceMesh via CDN
       const FaceMesh = window.FaceMesh;
       
@@ -223,10 +383,14 @@ export class FatigueEngine {
         video: { width: 640, height: 480, facingMode: 'user' },
       });
       videoElement.srcObject = stream;
+      this.imageCapture = this.createImageCapture(stream);
       
       await videoElement.play();
 
-      this.processFrame();
+      // Request wake lock to keep the tab active
+      await this.requestWakeLock();
+
+      void this.processFrame();
       this.startHeartbeat();
     } catch (error) {
       this.running = false;
@@ -249,18 +413,24 @@ export class FatigueEngine {
   private async processFrame(): Promise<void> {
     if (!this.running || !this.videoElement || !this.faceMesh) return;
 
+    if (!this.isTabVisible && this.imageCapture) {
+      if (!this.hiddenFrameLoopActive) {
+        void this.runHiddenFrameLoop();
+      }
+      return;
+    }
+
     if (this.videoElement.readyState >= 2) {
-      await this.faceMesh.send({ image: this.videoElement });
+      if (this.processingCtx && this.processingCanvas) {
+        this.processingCtx.drawImage(this.videoElement, 0, 0, this.processingCanvas.width, this.processingCanvas.height);
+        await this.sendFrameForDetection(this.processingCanvas);
+      } else {
+        await this.sendFrameForDetection(this.videoElement);
+      }
     }
 
-    // Check break reminder
-    const now = Date.now();
-    if (now - this.lastBreakAlert >= BREAK_INTERVAL_MS) {
-      this.lastBreakAlert = now;
-      this.onAlert('break', 'Time for a break! Follow the 20-20-20 rule: Look at something 20 feet away for 20 seconds.');
-    }
-
-    this.animationFrameId = requestAnimationFrame(() => this.processFrame());
+    this.checkBreakReminder(Date.now());
+    this.scheduleNextFrame();
   }
 
   private processResults(results: FaceMeshResults): void {
@@ -299,6 +469,11 @@ export class FatigueEngine {
     const eyesCurrentlyClosed =
       avgEAR < this.earThreshold &&
       Math.max(leftEAR, rightEAR) < this.earThreshold * 1.08;
+
+    // Log EAR values to help debug
+    if (this.blinkCount % 10 === 0 || !this.eyesClosed !== !eyesCurrentlyClosed) {
+      console.log(`[EAR] Avg: ${avgEAR.toFixed(3)}, Threshold: ${this.earThreshold.toFixed(3)}, Closed: ${eyesCurrentlyClosed}`);
+    }
 
     if (eyesCurrentlyClosed) {
       this.openStateStartAt = 0;
@@ -340,11 +515,14 @@ export class FatigueEngine {
         // Stability period passed, classify the closure event
         // Use 'now' to get the actual total closure duration
         const closureDuration = now - this.eyeClosedStart;
+        console.log(`[Blink] Classifying closure: ${closureDuration}ms (threshold: ${BLINK_MIN_MS}-${DROWSINESS_THRESHOLD_MS}ms)`);
+
         if (closureDuration >= DROWSINESS_THRESHOLD_MS) {
           // Long closures are drowsiness events and must never be counted as blinks.
           if (!this.drowsinessCountedForCurrentClosure) {
             this.longClosureEvents++;
             this.drowsinessCountedForCurrentClosure = true;
+            console.log(`[Drowsy] Long closure detected: ${closureDuration}ms`);
           }
         } else if (
           closureDuration >= BLINK_MIN_MS &&
@@ -355,6 +533,9 @@ export class FatigueEngine {
           this.blinkCount++;
           this.blinkHistory.push(now);
           this.lastBlinkAt = now;
+          console.log(`[Blink] ✓ Detected! Count: ${this.blinkCount}, Duration: ${closureDuration}ms`);
+        } else {
+          console.log(`[Blink] ✗ Not counted - Duration: ${closureDuration}ms, Since last blink: ${now - this.lastBlinkAt}ms`);
         }
         
         // Reset closure tracking after classification
@@ -490,13 +671,16 @@ export class FatigueEngine {
 
   stop(): SessionSummary {
     this.running = false;
-    if (this.animationFrameId) {
-      cancelAnimationFrame(this.animationFrameId);
-    }
+    this.clearFrameLoopHandles();
+    this.hiddenFrameLoopActive = false;
+    this.imageCapture = null;
     if (this.heartbeatIntervalId) {
       clearInterval(this.heartbeatIntervalId);
       this.heartbeatIntervalId = null;
     }
+    
+    // Release wake lock
+    this.releaseWakeLock();
 
     // Stop camera
     if (this.videoElement?.srcObject) {

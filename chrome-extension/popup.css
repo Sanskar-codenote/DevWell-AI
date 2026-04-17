@@ -88,13 +88,6 @@ body {
   font-size: 12px;
 }
 
-.session-controls {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-
 /* Dashboard Section */
 .dashboard-section {
   margin-top: 16px;
@@ -350,12 +343,40 @@ body {
 }
 
 .alert-item {
+  position: relative;
   padding: 8px 12px;
+  padding-right: 28px;
   background: var(--bg-secondary);
   border-left: 3px solid var(--accent-primary);
   border-radius: 4px;
   margin-bottom: 6px;
   font-size: 12px;
+}
+
+.alert-message {
+  line-height: 1.35;
+}
+
+.alert-close-btn {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 18px;
+  text-align: center;
+  padding: 0;
+}
+
+.alert-close-btn:hover {
+  color: var(--text-primary);
+  background: rgba(148, 163, 184, 0.12);
 }
 
 .alert-item.warning {

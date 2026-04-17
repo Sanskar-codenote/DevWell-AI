@@ -12,6 +12,7 @@ class DevWellPopup {
     this.alerts = [];
     this.isLoggedIn = false;
     this.userEmail = null;
+    this.websiteAuth = { loggedIn: false, email: null };
     this.elements = {};
 
     void this.init();
@@ -90,6 +91,9 @@ class DevWellPopup {
         this.isLoggedIn = Boolean(auth?.token);
         this.userEmail = auth?.email ?? null;
       }
+      if (changes.websiteAuth) {
+        this.websiteAuth = changes.websiteAuth.newValue ?? this.websiteAuth;
+      }
 
       this.updateUI();
     });
@@ -101,6 +105,7 @@ class DevWellPopup {
       'sessionData',
       'alerts',
       'extensionAuth',
+      'websiteAuth',
     ]);
 
     this.sessionActive = Boolean(result.sessionActive);
@@ -110,6 +115,18 @@ class DevWellPopup {
     const auth = result.extensionAuth;
     this.isLoggedIn = Boolean(auth?.token);
     this.userEmail = auth?.email ?? null;
+    this.websiteAuth = result.websiteAuth ?? this.websiteAuth;
+  }
+
+  getAuthMismatchMessage(targetEmail = null) {
+    if (!this.websiteAuth?.loggedIn || !this.websiteAuth?.email) return null;
+
+    const websiteEmail = String(this.websiteAuth.email).trim().toLowerCase();
+    const extensionEmail = String(targetEmail ?? this.userEmail ?? '').trim().toLowerCase();
+
+    if (!websiteEmail || !extensionEmail || websiteEmail === extensionEmail) return null;
+
+    return `Account mismatch: website is logged in as ${websiteEmail}. Please log in to extension with the same account.`;
   }
 
   async handleLogin() {
@@ -118,6 +135,12 @@ class DevWellPopup {
 
     if (!email || !password) {
       this.showError('Please enter both email and password');
+      return;
+    }
+
+    const preLoginMismatch = this.getAuthMismatchMessage(email);
+    if (preLoginMismatch) {
+      this.showError(preLoginMismatch);
       return;
     }
 
@@ -162,6 +185,8 @@ class DevWellPopup {
       await chrome.runtime.sendMessage({ action: 'requestStopSession' });
     }
     await chrome.storage.local.remove('extensionAuth');
+    await chrome.storage.local.set({ alerts: [] });
+    this.alerts = [];
     this.isLoggedIn = false;
     this.userEmail = null;
     this.updateUI();
@@ -170,15 +195,22 @@ class DevWellPopup {
   async handleSessionAction() {
     if (!this.isLoggedIn) return;
 
-    const actionType = this.sessionActive ? 'endSession' : 'startSession';
+    const mismatch = this.getAuthMismatchMessage();
+    if (mismatch) {
+      this.showError(mismatch);
+      return;
+    }
 
-    if (actionType === 'startSession') {
+    if (!this.sessionActive) {
+      // Start session - open monitor tab first
       const response = await chrome.runtime.sendMessage({ action: 'requestStartSession' });
       if (response && !response.success) {
         this.showError(response.error || 'Failed to start session');
         return;
       }
+      // Monitor tab will be opened by background.js
     } else {
+      // End session
       await chrome.runtime.sendMessage({ action: 'requestStopSession' });
     }
   }
@@ -267,14 +299,35 @@ class DevWellPopup {
     }
 
     this.elements.alertsList.innerHTML = recentAlerts.map((alert) => {
-      const typeClass = alert.type === 'fatigue_high' ? 'danger' : alert.type === 'fatigue_moderate' || alert.type === 'break' ? 'warning' : '';
+      const typeClass = alert.type === 'fatigue_high' || alert.type === 'session_save_failed' || alert.type === 'session_error' || alert.type === 'auth_mismatch'
+        ? 'danger'
+        : alert.type === 'fatigue_moderate' || alert.type === 'break' || alert.type === 'session_local_only'
+          ? 'warning'
+          : '';
       return `
         <div class="alert-item ${typeClass}">
-          <div>${alert.message}</div>
+          <button class="alert-close-btn" data-alert-ts="${alert.timestamp}" title="Dismiss alert" aria-label="Dismiss alert">&times;</button>
+          <div class="alert-message">${alert.message}</div>
           <div class="alert-time">${new Date(alert.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
         </div>
       `;
     }).join('');
+
+    this.elements.alertsList.querySelectorAll('.alert-close-btn').forEach((button) => {
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const ts = Number(button.getAttribute('data-alert-ts'));
+        void this.dismissAlert(ts);
+      });
+    });
+  }
+
+  async dismissAlert(timestamp) {
+    if (!Number.isFinite(timestamp)) return;
+    this.alerts = this.alerts.filter((alert) => Number(alert.timestamp) !== timestamp);
+    await chrome.storage.local.set({ alerts: this.alerts.slice(-5) });
+    this.renderAlerts();
   }
 
   async openAppRoute(pathname) {

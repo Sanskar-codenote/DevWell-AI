@@ -62,6 +62,7 @@ interface SessionContextType {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   isStarting: boolean;
   isSessionOwner: boolean;
+  extensionAvailable: boolean;
   startSession: (visibleVideoEl?: HTMLVideoElement) => Promise<void>;
   stopSession: () => Promise<void>;
   dismissAlert: (id: number) => void;
@@ -533,7 +534,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }, 2000);
 
     return () => window.clearInterval(intervalId);
-  }, [claimOwnership, handleAlert, isSessionOwner, isStarting, startOwnedSession, state.isRunning, user]);
+  }, [claimOwnership, extensionAvailable, handleAlert, isSessionOwner, isStarting, startOwnedSession, state.isRunning, user]);
 
   useEffect(() => {
     const handleBeforeUnload = () => {
@@ -546,7 +547,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [isSessionOwner]);
+  }, [extensionAvailable, isSessionOwner]);
 
   useEffect(() => {
     if (user) return;
@@ -635,6 +636,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       videoRef,
       isStarting,
       isSessionOwner: !extensionAvailable && isSessionOwner,
+      extensionAvailable,
       startSession,
       stopSession,
       dismissAlert,

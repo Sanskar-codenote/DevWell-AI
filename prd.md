@@ -1,3 +1,5 @@
+**Canonical docs:** See [docs/WEBSITE.md](docs/WEBSITE.md) and [docs/EXTENSION.md](docs/EXTENSION.md) for current behavior. This file is kept for historical/reference context.
+
 # DevWell AI – Product Requirements Document (PRD)
 
 ## Version

@@ -29,7 +29,7 @@ function getFatigueRingColor(score: number): string {
 
 export default function DashboardPage() {
   const {
-    state, alerts, sessionSummary, saving, videoRef, isStarting, isSessionOwner,
+    state, alerts, sessionSummary, saving, videoRef, isStarting, isSessionOwner, extensionAvailable,
     startSession, stopSession, dismissAlert, clearSummary,
   } = useSession();
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -70,9 +70,18 @@ export default function DashboardPage() {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold text-white">Dashboard</h1>
-          <p className="text-sm text-slate-400 mt-1">Real-time fatigue monitoring</p>
+          <p className="text-sm text-slate-400 mt-1">
+            {extensionAvailable
+              ? 'Monitoring via Chrome Extension'
+              : 'Real-time fatigue monitoring'}
+          </p>
         </div>
-        {!state.isRunning ? (
+        {extensionAvailable ? (
+          <div className="flex items-center gap-2 px-5 py-2.5 bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 rounded-xl text-sm font-medium">
+            <div className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
+            Extension Active
+          </div>
+        ) : !state.isRunning ? (
           <button
             onClick={handleStartSession}
             disabled={isStarting}
@@ -92,6 +101,11 @@ export default function DashboardPage() {
               </>
             )}
           </button>
+        ) : extensionAvailable ? (
+          <div className="flex items-center gap-2 px-5 py-2.5 bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 rounded-xl text-sm font-medium">
+            <div className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
+            Extension Active
+          </div>
         ) : (
           <button
             onClick={stopSession}
@@ -102,6 +116,26 @@ export default function DashboardPage() {
           </button>
         )}
       </div>
+
+      {/* Extension Info Alert */}
+      {extensionAvailable && (
+        <div className="mb-6 bg-cyan-500/10 border border-cyan-500/20 rounded-2xl p-4">
+          <div className="flex items-start gap-3">
+            <div className="h-8 w-8 rounded-lg bg-cyan-500/20 flex items-center justify-center shrink-0 mt-0.5">
+              <svg className="h-4 w-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
+              </svg>
+            </div>
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-cyan-400 mb-1">Chrome Extension Detected</h3>
+              <p className="text-xs text-cyan-300/80 leading-relaxed">
+                Your DevWell Chrome Extension is active. Use the extension popup to start/stop sessions. 
+                This dashboard will display real-time metrics from the extension.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Alerts */}
       {alerts.length > 0 && (

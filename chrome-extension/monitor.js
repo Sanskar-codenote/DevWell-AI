@@ -21,6 +21,34 @@ let videoElement = document.getElementById('webcam'); // Get from DOM
 let faceLandmarker = null;
 let updateInterval = null;
 let rafId = null;
+let backgroundTimeoutId = null;
+let imageCapture = null;
+let hiddenFrameLoopActive = false;
+let isTabVisible = true;
+const processingCanvas = document.createElement('canvas');
+const processingCtx = processingCanvas.getContext('2d', { willReadFrequently: true });
+processingCanvas.width = 640;
+processingCanvas.height = 480;
+
+// Listen for visibility changes
+document.addEventListener('visibilitychange', () => {
+  const wasVisible = isTabVisible;
+  isTabVisible = document.visibilityState === 'visible';
+  console.log(`[DevWell Monitor] Tab visibility changed: ${isTabVisible ? 'visible' : 'hidden'}`);
+
+  if (!sessionActive) return;
+
+  if (isTabVisible && !wasVisible) {
+    clearFrameLoopHandles();
+    processFrame();
+    return;
+  }
+
+  if (!isTabVisible && imageCapture && !hiddenFrameLoopActive) {
+    clearFrameLoopHandles();
+    void runHiddenFrameLoop();
+  }
+});
 
 // EAR Calibration variables
 let earThreshold = DEFAULT_EAR_THRESHOLD;
@@ -79,6 +107,82 @@ function buildSessionData() {
   };
 }
 
+function resetSessionCounters() {
+  blinkCount = 0;
+  longClosureEvents = 0;
+  blinkHistory = [];
+  lastBlinkTime = 0;
+  eyesClosed = false;
+  eyeClosedStart = 0;
+  openStateStartAt = 0;
+  earThreshold = DEFAULT_EAR_THRESHOLD;
+  earCalibrationSamples = [];
+}
+
+function clearFrameLoopHandles() {
+  if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+  if (backgroundTimeoutId) {
+    clearTimeout(backgroundTimeoutId);
+    backgroundTimeoutId = null;
+  }
+}
+
+function scheduleNextFrame() {
+  if (!sessionActive) return;
+
+  clearFrameLoopHandles();
+
+  if (isTabVisible) {
+    rafId = requestAnimationFrame(processFrame);
+    return;
+  }
+
+  if (imageCapture) {
+    if (!hiddenFrameLoopActive) {
+      void runHiddenFrameLoop();
+    }
+    return;
+  }
+
+  backgroundTimeoutId = setTimeout(processFrame, 50);
+}
+
+async function runHiddenFrameLoop() {
+  if (hiddenFrameLoopActive || !sessionActive || isTabVisible || !imageCapture) return;
+  hiddenFrameLoopActive = true;
+
+  try {
+    while (sessionActive && !isTabVisible && imageCapture) {
+      try {
+        const bitmap = await imageCapture.grabFrame();
+        try {
+          processingCtx.drawImage(bitmap, 0, 0, processingCanvas.width, processingCanvas.height);
+          const now = performance.now();
+          const results = faceLandmarker.detectForVideo(processingCanvas, now);
+          onFaceLandmarkerResults(results);
+        } finally {
+          bitmap.close();
+        }
+      } catch (err) {
+        console.warn('[DevWell Monitor] Hidden frame capture failed, falling back to timer mode.', err);
+        imageCapture = null;
+        break;
+      }
+
+      // Yield once so message handling and visibility changes stay responsive.
+      await Promise.resolve();
+    }
+  } finally {
+    hiddenFrameLoopActive = false;
+    if (sessionActive) {
+      scheduleNextFrame();
+    }
+  }
+}
+
 async function startSession() {
   if (sessionActive) return;
 
@@ -106,16 +210,7 @@ async function startSession() {
   console.log('[DevWell Monitor] Starting session...');
   sessionActive = true;
   sessionStartTime = Date.now();
-  // Reset all session counters
-  blinkCount = 0;
-  longClosureEvents = 0;
-  blinkHistory = [];
-  lastBlinkTime = 0;
-  eyesClosed = false;
-  eyeClosedStart = 0;
-  openStateStartAt = 0;
-  earThreshold = DEFAULT_EAR_THRESHOLD;
-  earCalibrationSamples = [];
+  resetSessionCounters();
   
   try {
     console.log('[DevWell Monitor] Requesting camera access...');
@@ -123,6 +218,18 @@ async function startSession() {
       video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
     });
     videoElement.srcObject = cameraStream;
+
+    imageCapture = null;
+    const track = cameraStream.getVideoTracks()[0];
+    if (track && typeof ImageCapture !== 'undefined') {
+      try {
+        imageCapture = new ImageCapture(track);
+        console.log('[DevWell Monitor] ImageCapture enabled for hidden-tab frame processing.');
+      } catch (err) {
+        console.warn('[DevWell Monitor] ImageCapture unavailable for this track.', err);
+      }
+    }
+
     videoElement.onloadedmetadata = () => {
       videoElement.play();
       console.log('[DevWell Monitor] Video playing, starting processFrame loop.');
@@ -156,6 +263,11 @@ function onFaceLandmarkerResults(results) {
   const now = Date.now();
   const eyesCurrentlyClosed = avgEAR < earThreshold;
 
+  // Log EAR values to help debug
+  if (blinkCount % 10 === 0 || !eyesClosed !== !eyesCurrentlyClosed) {
+    console.log(`[DevWell Monitor] EAR: ${avgEAR.toFixed(3)}, Threshold: ${earThreshold.toFixed(3)}, Closed: ${eyesCurrentlyClosed}`);
+  }
+
   if (eyesCurrentlyClosed) {
     openStateStartAt = 0;
     if (!eyesClosed) {
@@ -164,15 +276,28 @@ function onFaceLandmarkerResults(results) {
     }
   } else if (!eyesCurrentlyClosed && eyesClosed) {
     if (openStateStartAt === 0) openStateStartAt = now;
-    if (now - openStateStartAt >= REOPEN_STABILITY_MS) {
+    
+    // Calculate if we've been open long enough to be stable.
+    // In background (low FPS), we might only get one frame of 'open' after closure.
+    // If the gap since the last frame is large (> 150ms), we skip the stability check.
+    const isBackground = !isTabVisible;
+    const stableEnough = (now - openStateStartAt >= REOPEN_STABILITY_MS) || isBackground;
+    
+    if (stableEnough) {
       const closedDuration = now - eyeClosedStart;
+      console.log(`[DevWell Monitor] Classifying closure: ${closedDuration}ms (threshold: ${BLINK_MIN_MS}-${DROWSINESS_THRESHOLD_MS}ms)`);
+      
       if (closedDuration >= DROWSINESS_THRESHOLD_MS) {
         longClosureEvents += 1;
+        console.log(`[DevWell Monitor] Drowsy event detected: ${closedDuration}ms`);
       } else if (closedDuration >= BLINK_MIN_MS) {
         if (now - lastBlinkTime >= BLINK_REFRACTORY_MS) {
           blinkCount += 1;
           blinkHistory.push(now);
           lastBlinkTime = now;
+          console.log(`[DevWell Monitor] ✓ Blink detected! Count: ${blinkCount}, Duration: ${closedDuration}ms`);
+        } else {
+          console.log(`[DevWell Monitor] ✗ Blink skipped (refractory)`);
         }
       }
       eyesClosed = false;
@@ -184,22 +309,48 @@ let lastVideoTime = -1;
 async function processFrame() {
   if (!sessionActive) return;
 
-  const startTimeMs = performance.now();
-  if (videoElement.readyState >= 2 && startTimeMs - lastVideoTime >= 33) { // Cap at ~30 FPS
-      lastVideoTime = startTimeMs;
-      const results = faceLandmarker.detectForVideo(videoElement, startTimeMs);
-      onFaceLandmarkerResults(results);
+  if (!isTabVisible && imageCapture) {
+    if (!hiddenFrameLoopActive) {
+      void runHiddenFrameLoop();
+    }
+    return;
   }
 
-  rafId = requestAnimationFrame(processFrame);
+  const now = performance.now();
+  
+  // Ensure we have a video element and it's ready
+  if (videoElement.readyState >= 2) {
+    // When visible, we target ~30fps (33ms). 
+    // When hidden, we target ~10fps (100ms) to catch blinks while being battery friendly.
+    const minDelay = isTabVisible ? 33 : 100;
+    
+    if (now - lastVideoTime >= minDelay) {
+      lastVideoTime = now;
+      
+      // Draw to canvas first. This ensures we have a fresh frame even if the video element
+      // is being throttled by the browser's compositor.
+      processingCtx.drawImage(videoElement, 0, 0, processingCanvas.width, processingCanvas.height);
+      
+      try {
+        const results = faceLandmarker.detectForVideo(processingCanvas, now);
+        onFaceLandmarkerResults(results);
+      } catch (err) {
+        console.error('[DevWell Monitor] Detection error:', err);
+      }
+    }
+  }
+
+  scheduleNextFrame();
 }
 
 function stopSession() {
   if (!sessionActive) return;
   console.log('[DevWell Monitor] Stopping session...');
   sessionActive = false;
-  
-  if (rafId) cancelAnimationFrame(rafId);
+
+  clearFrameLoopHandles();
+  imageCapture = null;
+  hiddenFrameLoopActive = false;
   if (updateInterval) clearInterval(updateInterval);
 
   if (cameraStream) {
