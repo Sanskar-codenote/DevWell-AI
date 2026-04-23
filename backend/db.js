@@ -34,6 +34,7 @@ async function initDB() {
 
       CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
       CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(session_date);
+      CREATE INDEX IF NOT EXISTS idx_sessions_user_id_date ON sessions(user_id, session_date);
     `);
     console.log('Database tables initialized');
   } finally {
@@ -41,4 +42,9 @@ async function initDB() {
   }
 }
 
-module.exports = { pool, initDB };
+async function closePool() {
+  await pool.end();
+  console.log('Database pool closed');
+}
+
+module.exports = { pool, initDB, closePool };

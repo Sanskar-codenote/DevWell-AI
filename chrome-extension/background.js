@@ -174,7 +174,7 @@ class DevWellBackground {
     }
 
     const payload = {
-      session_date: new Date().toISOString(),
+      session_date: new Date().toISOString().split('T')[0],
       duration_minutes: sessionData.sessionDurationMinutes || 0,
       avg_blink_rate: sessionData.sessionAvgBlinkRate || 0,
       fatigue_score: sessionData.fatigueScore || 0,

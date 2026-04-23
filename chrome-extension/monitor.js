@@ -147,7 +147,7 @@ function scheduleNextFrame() {
     return;
   }
 
-  backgroundTimeoutId = setTimeout(processFrame, 50);
+  backgroundTimeoutId = setTimeout(processFrame, isTabVisible ? 50 : 500);
 }
 
 async function runHiddenFrameLoop() {
@@ -172,8 +172,8 @@ async function runHiddenFrameLoop() {
         break;
       }
 
-      // Yield once so message handling and visibility changes stay responsive.
-      await Promise.resolve();
+      // Stricter background throttle: ~2 FPS to save battery
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
   } finally {
     hiddenFrameLoopActive = false;
@@ -321,8 +321,8 @@ async function processFrame() {
   // Ensure we have a video element and it's ready
   if (videoElement.readyState >= 2) {
     // When visible, we target ~30fps (33ms). 
-    // When hidden, we target ~10fps (100ms) to catch blinks while being battery friendly.
-    const minDelay = isTabVisible ? 33 : 100;
+    // When hidden, we target ~2fps (500ms) to catch blinks while being battery friendly.
+    const minDelay = isTabVisible ? 33 : 500;
     
     if (now - lastVideoTime >= minDelay) {
       lastVideoTime = now;

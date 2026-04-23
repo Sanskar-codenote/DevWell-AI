@@ -37,3 +37,21 @@ npm run dev
 Default local URLs:
 - Frontend: `http://localhost:5173` (or `5174`)
 - Backend: `http://localhost:3001`
+
+## Production Deployment
+
+When deploying DevWell to a production environment, ensure the following configurations:
+
+### 1. Environment Variables
+- Set `NODE_ENV=production` for both backend and frontend builds.
+- Configure `EXTENSION_ID` in the backend `.env` to match your published Chrome Extension ID to allow secure cross-origin communication.
+
+### 2. MediaPipe Assets
+- MediaPipe assets (WASM and model files) are hosted locally in this project to avoid external CDN dependencies and improve reliability.
+- **Frontend**: Assets are located in `frontend/public/mediapipe/`.
+- **Extension**: Assets are located in `chrome-extension/lib/`.
+
+### 3. Database Management
+- **Indexing**: Ensure the `sessions` table is indexed on `userId` and `startTime` for performant analytics queries.
+- **Pool Management**: In production, configure the database connection pool (in `backend/db.js`) with appropriate `max` and `idleTimeoutMillis` values based on your server capacity.
+

@@ -3,7 +3,7 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
-const { initDB } = require('./db');
+const { initDB, closePool } = require('./db');
 const authRoutes = require('./routes/auth');
 const sessionsRoutes = require('./routes/sessions');
 const analyticsRoutes = require('./routes/analytics');
@@ -25,7 +25,13 @@ app.use(cors({
     
     // Allow Chrome extensions (chrome-extension://*)
     if (origin.startsWith('chrome-extension://')) {
-      return callback(null, true);
+      const extensionId = origin.split('://')[1];
+      if (process.env.EXTENSION_ID && extensionId === process.env.EXTENSION_ID) {
+        return callback(null, true);
+      }
+      if (!process.env.EXTENSION_ID) {
+        return callback(null, true); // Allow all if not specified (for dev)
+      }
     }
     
     // Allow localhost origins
@@ -46,6 +52,17 @@ if (process.env.NODE_ENV === 'production') {
   });
   app.use('/api/', apiLimiter);
 }
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // limit each IP to 5 requests per windowMs
+  message: { error: 'Too many requests, please try again after 15 minutes' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/api/v1/auth/login', authLimiter);
+app.use('/api/v1/auth/register', authLimiter);
 
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/sessions', sessionsRoutes);
@@ -72,9 +89,27 @@ app.use((err, req, res, next) => {
 
 async function start() {
   await initDB();
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`DevWell API running on http://localhost:${PORT}`);
   });
+
+  const shutdown = async (signal) => {
+    console.log(`\n${signal} received. Shutting down gracefully...`);
+    server.close(async () => {
+      console.log('HTTP server closed');
+      await closePool();
+      process.exit(0);
+    });
+
+    // If server doesn't close in 10s, force shutdown
+    setTimeout(() => {
+      console.error('Could not close connections in time, forcefully shutting down');
+      process.exit(1);
+    }, 10000);
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 start().catch(console.error);

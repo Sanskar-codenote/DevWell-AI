@@ -210,7 +210,7 @@ export class FatigueEngine {
     }
 
     // Fallback mode when ImageCapture is unavailable.
-    this.backgroundFallbackId = window.setTimeout(() => this.processFrame(), 50);
+    this.backgroundFallbackId = window.setTimeout(() => this.processFrame(), this.isTabVisible ? 50 : 500);
   }
 
   private checkBreakReminder(now: number): void {
@@ -276,7 +276,8 @@ export class FatigueEngine {
         }
 
         this.checkBreakReminder(Date.now());
-        await Promise.resolve();
+        // Stricter background throttle: ~2 FPS to save battery
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
     } finally {
       this.hiddenFrameLoopActive = false;
