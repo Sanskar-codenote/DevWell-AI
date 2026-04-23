@@ -46,6 +46,7 @@
       <div class="session-controls">
         <button id="sessionBtn" class="btn btn-primary">Start Session</button>
         <button id="logoutBtn" class="btn btn-outline btn-sm">Log Out</button>
+        <button id="settingsBtn" class="btn btn-outline btn-sm">⚙️ Settings</button>
       </div>
       
       <div class="metrics-grid">
@@ -94,6 +95,58 @@
       <div class="footer">
         <button id="openDashboardBtn" class="btn btn-outline">Open Dashboard</button>
         <button id="viewAnalyticsBtn" class="btn btn-outline">View Analytics</button>
+      </div>
+    </div>
+
+    <!-- Settings Section - Hidden by default -->
+    <div class="settings-section" id="settingsSection" style="display: none;">
+      <div class="settings-header">
+        <button id="backToDashboard" class="back-button">← Back</button>
+        <h3>Settings</h3>
+      </div>
+      
+      <div class="settings-content">
+        <div class="settings-form">
+          <div class="form-group">
+            <label for="blinkThreshold">Normal Blink Rate</label>
+            <div class="slider-container">
+              <input type="range" id="blinkThreshold" min="5" max="30" value="15">
+              <span id="blinkValue" class="slider-value">15</span>
+              <span class="unit">blinks/min</span>
+            </div>
+            <p class="description">Set your normal blink rate threshold.</p>
+          </div>
+
+          <div class="form-group">
+            <label for="lowFatigueThreshold">Low Fatigue Threshold (Warning)</label>
+            <div class="slider-container">
+              <input type="range" id="lowFatigueThreshold" min="10" max="90" value="50">
+              <span id="lowFatigueValue" class="slider-value warning-value">50</span>
+              <span class="unit">%</span>
+            </div>
+            <p class="description">Receive warning notifications when exceeded.</p>
+          </div>
+
+          <div class="form-group">
+            <label for="highFatigueThreshold">High Fatigue Threshold (Alert + Sound)</label>
+            <div class="slider-container">
+              <input type="range" id="highFatigueThreshold" min="50" max="100" value="80">
+              <span id="highFatigueValue" class="slider-value alert-value">80</span>
+              <span class="unit">%</span>
+            </div>
+            <p class="description">Receive urgent alerts with sound when exceeded.</p>
+          </div>
+
+          <div class="form-group checkbox-group">
+            <input type="checkbox" id="enable20MinNotification" checked>
+            <label for="enable20MinNotification">Enable 20-Minute Break Reminders</label>
+          </div>
+
+          <div class="button-group">
+            <button id="cancelSettingsBtn" class="btn btn-outline">Cancel</button>
+            <button id="saveSettingsBtn" class="btn btn-primary">Save Settings</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>

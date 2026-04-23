@@ -9,6 +9,7 @@ import RegisterPage from './pages/RegisterPage';
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 
 function RouteFallback() {
   return (
@@ -31,6 +32,7 @@ export default function App() {
                 <Route element={<ProtectedLayout />}>
                   <Route path="/dashboard" element={<DashboardPage />} />
                   <Route path="/analytics" element={<AnalyticsPage />} />
+                  <Route path="/settings" element={<SettingsPage />} />
                 </Route>
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
               </Routes>

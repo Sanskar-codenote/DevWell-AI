@@ -1,6 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { LayoutDashboard, BarChart3, LogOut, Activity } from 'lucide-react';
+import { LayoutDashboard, BarChart3, LogOut, Activity, Settings } from 'lucide-react';
 
 export default function Sidebar() {
   const { user, logout } = useAuth();
@@ -38,6 +38,10 @@ export default function Sidebar() {
         <NavLink to="/analytics" className={linkClass}>
           <BarChart3 className="h-4 w-4" />
           Analytics
+        </NavLink>
+        <NavLink to="/settings" className={linkClass}>
+          <Settings className="h-4 w-4" />
+          Settings
         </NavLink>
       </nav>
 

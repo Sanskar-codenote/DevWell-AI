@@ -321,6 +321,17 @@ class DevWellBackground {
         await this.broadcastState();
         return { success: false, error: message.error };
 
+      case 'syncWebsiteSettings':
+        if (message.settings) {
+          await chrome.storage.local.set({ websiteSettings: message.settings });
+          
+          // Also broadcast to any open extension popups
+          await this.broadcastSettingsToPopups(message.settings);
+          
+          return { success: true };
+        }
+        return { success: false, error: 'Missing settings data' };
+
       default:
         return { success: false, error: 'Unknown action' };
     }
@@ -405,6 +416,26 @@ class DevWellBackground {
         }).catch(() => undefined);
       })
     );
+  }
+
+  async broadcastSettingsToPopups(settings) {
+    // Get all extension popup windows
+    const windows = await chrome.windows.getAll({ populate: true });
+    
+    for (const win of windows) {
+      for (const tab of win.tabs || []) {
+        if (tab.url?.includes('popup.html')) {
+          try {
+            await chrome.tabs.sendMessage(tab.id, {
+              action: 'syncSettings',
+              settings: settings
+            });
+          } catch (e) {
+            // Popup might be closed or not ready
+          }
+        }
+      }
+    }
   }
 
   async openDashboard() {

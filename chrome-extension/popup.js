@@ -36,6 +36,8 @@ class DevWellPopup {
     this.elements.logoutBtn = document.getElementById('logoutBtn');
     
     this.elements.sessionBtn = document.getElementById('sessionBtn');
+    this.elements.settingsBtn = document.getElementById('settingsBtn');
+    this.elements.settingsBtnText = document.getElementById('settingsBtnText');
     this.elements.statusIndicator = document.getElementById('statusIndicator');
     this.elements.sessionTime = document.getElementById('sessionTime');
     this.elements.blinkRate = document.getElementById('blinkRate');
@@ -45,6 +47,20 @@ class DevWellPopup {
     this.elements.fatigueLevel = document.getElementById('fatigueLevel');
     this.elements.progressFill = document.getElementById('progressFill');
     this.elements.alertsList = document.getElementById('alertsList');
+    
+    // Settings elements
+    this.elements.settingsSection = document.getElementById('settingsSection');
+    this.elements.saveSettingsBtn = document.getElementById('saveSettingsBtn');
+    this.elements.cancelSettingsBtn = document.getElementById('cancelSettingsBtn');
+    this.elements.blinkThresholdInput = document.getElementById('blinkThreshold');
+    this.elements.lowFatigueThresholdInput = document.getElementById('lowFatigueThreshold');
+    this.elements.highFatigueThresholdInput = document.getElementById('highFatigueThreshold');
+    this.elements.enable20MinNotificationInput = document.getElementById('enable20MinNotification');
+    this.elements.blinkValueDisplay = document.getElementById('blinkValue');
+    this.elements.lowFatigueValueDisplay = document.getElementById('lowFatigueValue');
+    this.elements.highFatigueValueDisplay = document.getElementById('highFatigueValue');
+    
+
   }
 
   bindEvents() {
@@ -61,12 +77,54 @@ class DevWellPopup {
       void this.handleSessionAction();
     });
 
+    this.elements.settingsBtn?.addEventListener('click', () => {
+      void this.toggleSettings();
+    });
+
+    document.getElementById('backToDashboard')?.addEventListener('click', () => {
+      this.toggleSettings();
+    });
+
+    this.elements.saveSettingsBtn?.addEventListener('click', () => {
+      void this.saveSettings();
+    });
+
+    this.elements.cancelSettingsBtn?.addEventListener('click', () => {
+      this.toggleSettings();
+    });
+
+    // Slider event listeners
+    this.elements.blinkThresholdInput?.addEventListener('input', () => {
+      this.updateSliderDisplay();
+    });
+
+    this.elements.lowFatigueThresholdInput?.addEventListener('input', () => {
+      this.updateSliderDisplay();
+    });
+
+    this.elements.highFatigueThresholdInput?.addEventListener('input', () => {
+      this.updateSliderDisplay();
+    });
+
     document.getElementById('openDashboardBtn')?.addEventListener('click', () => {
       void this.openAppRoute('/dashboard');
     });
 
     document.getElementById('viewAnalyticsBtn')?.addEventListener('click', () => {
       void this.openAppRoute('/analytics');
+    });
+
+    // Listen for syncSettings messages from background
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message.action === 'syncSettings') {
+        console.log('[Popup] Received syncSettings message from background:', message.settings);
+        this.settings = message.settings;
+        // If settings view is open, update the form
+        if (this.elements.settingsSection?.style.display !== 'none') {
+          this.loadSettingsToForm();
+        }
+        sendResponse({ success: true });
+      }
     });
   }
 
@@ -95,6 +153,15 @@ class DevWellPopup {
         this.websiteAuth = changes.websiteAuth.newValue ?? this.websiteAuth;
       }
 
+      // Sync settings from website to extension
+      if (changes.websiteSettings) {
+        this.settings = changes.websiteSettings.newValue;
+        // If settings view is open, update the form
+        if (this.elements.settingsSection?.style.display !== 'none') {
+          this.loadSettingsToForm();
+        }
+      }
+
       this.updateUI();
     });
   }
@@ -106,6 +173,7 @@ class DevWellPopup {
       'alerts',
       'extensionAuth',
       'websiteAuth',
+      'extensionSettings',
     ]);
 
     this.sessionActive = Boolean(result.sessionActive);
@@ -116,6 +184,16 @@ class DevWellPopup {
     this.isLoggedIn = Boolean(auth?.token);
     this.userEmail = auth?.email ?? null;
     this.websiteAuth = result.websiteAuth ?? this.websiteAuth;
+    
+    // Load settings
+    this.settings = result.extensionSettings || {
+      blinkThreshold: 15,
+      lowFatigueThreshold: 50,
+      highFatigueThreshold: 80,
+      enable20MinNotification: true,
+    };
+    
+
   }
 
   getAuthMismatchMessage(targetEmail = null) {
@@ -240,6 +318,11 @@ class DevWellPopup {
       this.elements.sessionBtn.textContent = this.sessionActive ? 'End Session' : 'Start Session';
       this.elements.sessionBtn.className = this.sessionActive ? 'btn btn-outline' : 'btn btn-primary';
     }
+    
+    // Update settings button visibility based on login state
+    if (this.elements.settingsBtn) {
+      this.elements.settingsBtn.style.display = this.isLoggedIn ? 'inline-block' : 'none';
+    }
 
     const sessionDuration = this.sessionData?.sessionDurationMinutes ?? 0;
     const blinkRate = this.sessionData?.currentBlinkRate || this.sessionData?.sessionAvgBlinkRate || 0;
@@ -358,6 +441,125 @@ class DevWellPopup {
     const mins = Math.floor(totalSeconds / 60);
     const secs = totalSeconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  toggleSettings() {
+    const isVisible = this.elements.settingsSection?.style.display !== 'none';
+    if (this.elements.settingsSection) {
+      this.elements.settingsSection.style.display = isVisible ? 'none' : 'block';
+    }
+    
+    if (!isVisible) {
+      this.loadSettingsToForm();
+    }
+  }
+
+  loadSettingsToForm() {
+    if (this.settings) {
+      if (this.elements.blinkThresholdInput) {
+        this.elements.blinkThresholdInput.value = String(this.settings.blinkThreshold);
+      }
+      if (this.elements.lowFatigueThresholdInput) {
+        this.elements.lowFatigueThresholdInput.value = String(this.settings.lowFatigueThreshold);
+      }
+      if (this.elements.highFatigueThresholdInput) {
+        this.elements.highFatigueThresholdInput.value = String(this.settings.highFatigueThreshold);
+      }
+      if (this.elements.enable20MinNotificationInput) {
+        this.elements.enable20MinNotificationInput.checked = Boolean(this.settings.enable20MinNotification);
+      }
+      this.updateSliderDisplay();
+    }
+  }
+
+  updateSliderDisplay() {
+    this.elements.blinkValueDisplay.textContent = this.elements.blinkThresholdInput.value;
+    this.elements.lowFatigueValueDisplay.textContent = this.elements.lowFatigueThresholdInput.value;
+    this.elements.highFatigueValueDisplay.textContent = this.elements.highFatigueThresholdInput.value;
+  }
+
+  async saveSettings() {
+    const newSettings = {
+      blinkThreshold: Number(this.elements.blinkThresholdInput.value),
+      lowFatigueThreshold: Number(this.elements.lowFatigueThresholdInput.value),
+      highFatigueThreshold: Number(this.elements.highFatigueThresholdInput.value),
+      enable20MinNotification: this.elements.enable20MinNotificationInput.checked,
+    };
+
+    try {
+      console.log('[Extension] Saving settings:', newSettings);
+      
+      // Save to extension storage
+      await chrome.storage.local.set({ extensionSettings: newSettings });
+      console.log('[Extension] Saved to extensionSettings');
+      
+      // Also sync to website storage for two-way synchronization
+      await chrome.storage.local.set({ websiteSettings: newSettings });
+      console.log('[Extension] Saved to websiteSettings');
+      
+      this.settings = newSettings;
+      this.showSuccess('Settings saved successfully!');
+      this.toggleSettings();
+      
+      // Send message to website if it's open
+      await this.syncSettingsToWebsite(newSettings);
+    } catch (err) {
+      console.error('[DevWell Popup] Failed to save settings:', err);
+      this.showError('Failed to save settings');
+    }
+  }
+
+  async syncSettingsToWebsite(settings) {
+    try {
+      console.log('[Extension] Syncing settings to website...');
+      
+      // Check if website is open in any tab
+      const tabs = await chrome.tabs.query({
+        url: ['http://localhost:5173/*', 'http://127.0.0.1:5173/*']
+      });
+      
+      console.log('[Extension] Found website tabs:', tabs.length);
+      
+      if (tabs.length > 0) {
+        // Send message to website to update settings
+        for (const tab of tabs) {
+          try {
+            console.log('[Extension] Sending message to tab:', tab.id, tab.url);
+            await chrome.tabs.sendMessage(tab.id, {
+              action: 'syncSettings',
+              settings: settings
+            });
+            console.log('[Extension] Settings synced to website tab:', tab.id);
+          } catch (err) {
+            console.warn('[Extension] Could not sync settings to tab:', tab.id, err);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[Extension] Failed to sync settings to website:', err);
+    }
+  }
+
+  showSuccess(message) {
+    document.querySelector('.success-banner')?.remove();
+
+    const banner = document.createElement('div');
+    banner.className = 'success-banner';
+    banner.textContent = message;
+
+    document.querySelector('.container')?.prepend(banner);
+    window.setTimeout(() => banner.remove(), 3000);
+  }
+
+  showError(message) {
+    document.querySelector('.error-banner')?.remove();
+
+    const banner = document.createElement('div');
+    banner.className = 'error-banner';
+    banner.textContent = message;
+
+    document.querySelector('.container')?.prepend(banner);
+    window.setTimeout(() => banner.remove(), 3000);
   }
 }
 

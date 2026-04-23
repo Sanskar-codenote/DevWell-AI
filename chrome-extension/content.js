@@ -51,6 +51,16 @@ class DevWellContentScript {
           });
         return true;
       }
+
+      if (message?.action === 'syncSettings') {
+        // Forward the message to the website page
+        window.postMessage({
+          type: 'DEVWELL_SETTINGS_SYNC',
+          settings: message.settings
+        }, window.origin);
+        sendResponse?.({ success: true });
+        return;
+      }
     });
 
     chrome.storage.onChanged.addListener((changes, areaName) => {
