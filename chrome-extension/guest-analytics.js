@@ -1,7 +1,7 @@
+let currentPeriod = 'weekly';
+let allSessions = [];
+
 document.addEventListener('DOMContentLoaded', async () => {
-  let currentPeriod = 'weekly';
-  let allSessions = [];
-  
   // Load sessions from chrome storage
   try {
     const result = await chrome.storage.local.get('guestSessions');

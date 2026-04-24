@@ -49,6 +49,11 @@ class DevWellPopup {
     this.elements.viewGuestAnalyticsBtn = document.getElementById('viewGuestAnalyticsBtn');
     this.elements.guestSessionsGrid = document.getElementById('guestSessionsGrid');
 
+    // Confirmation Modal Elements
+    this.elements.confirmModal = document.getElementById('confirmModal');
+    this.elements.cancelDeleteBtn = document.getElementById('cancelDeleteBtn');
+    this.elements.confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
+
 
     this.elements.footer = document.querySelector('.footer');
     this.elements.sessionTime = document.getElementById('sessionTime');
@@ -111,6 +116,14 @@ class DevWellPopup {
 
     this.elements.viewGuestAnalyticsBtn?.addEventListener('click', () => {
       void this.openGuestAnalytics();
+    });
+
+    this.elements.cancelDeleteBtn?.addEventListener('click', () => {
+      if (this.elements.confirmModal) this.elements.confirmModal.style.display = 'none';
+    });
+
+    this.elements.confirmDeleteBtn?.addEventListener('click', () => {
+      void this.executeDeleteAllSessions();
     });
 
     document.getElementById('backToDashboard')?.addEventListener('click', () => {
@@ -669,6 +682,15 @@ class DevWellPopup {
   renderGuestSessions(sessions) {
     if (!this.elements.guestSessionsGrid) return;
     
+    // Enable/Disable buttons based on session count
+    if (this.elements.deleteAllGuestSessionsBtn) {
+      this.elements.deleteAllGuestSessionsBtn.disabled = sessions.length === 0;
+    }
+    
+    if (this.elements.viewGuestAnalyticsBtn) {
+      this.elements.viewGuestAnalyticsBtn.disabled = sessions.length === 0;
+    }
+    
     if (sessions.length === 0) {
       this.elements.guestSessionsGrid.innerHTML = '<div class="guest-empty">No local sessions yet. Start a session to begin monitoring.</div>';
       return;
@@ -715,13 +737,18 @@ class DevWellPopup {
   }
 
   async deleteAllGuestSessions() {
-    if (!confirm('Are you sure you want to delete ALL local sessions? This cannot be undone.')) {
-      return;
+    if (this.elements.confirmModal) {
+      this.elements.confirmModal.style.display = 'flex';
     }
-    
+  }
+
+  async executeDeleteAllSessions() {
     try {
       await chrome.storage.local.remove('guestSessions');
       this.loadGuestSessions();
+      if (this.elements.confirmModal) {
+        this.elements.confirmModal.style.display = 'none';
+      }
       this.showSuccess('All local sessions deleted successfully!');
     } catch (err) {
       console.error('Failed to delete guest sessions:', err);
