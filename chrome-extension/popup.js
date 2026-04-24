@@ -12,6 +12,7 @@ class DevWellPopup {
     this.alerts = [];
     this.isLoggedIn = false;
     this.userEmail = null;
+    this.guestModeActive = false;
     this.websiteAuth = { loggedIn: false, email: null };
     this.elements = {};
 
@@ -34,11 +35,22 @@ class DevWellPopup {
     this.elements.passwordInput = document.getElementById('password');
     this.elements.loginBtn = document.getElementById('loginBtn');
     this.elements.logoutBtn = document.getElementById('logoutBtn');
+    this.elements.userEmail = document.getElementById('userEmail');
     
     this.elements.sessionBtn = document.getElementById('sessionBtn');
     this.elements.settingsBtn = document.getElementById('settingsBtn');
     this.elements.settingsBtnText = document.getElementById('settingsBtnText');
+    this.elements.guestModeBtn = document.getElementById('guestModeBtn');
     this.elements.statusIndicator = document.getElementById('statusIndicator');
+    
+    // Guest mode elements
+    this.elements.guestModeSection = document.getElementById('guestModeSection');
+    this.elements.deleteAllGuestSessionsBtn = document.getElementById('deleteAllGuestSessionsBtn');
+    this.elements.viewGuestAnalyticsBtn = document.getElementById('viewGuestAnalyticsBtn');
+    this.elements.guestSessionsGrid = document.getElementById('guestSessionsGrid');
+
+
+    this.elements.footer = document.querySelector('.footer');
     this.elements.sessionTime = document.getElementById('sessionTime');
     this.elements.blinkRate = document.getElementById('blinkRate');
     this.elements.totalBlinks = document.getElementById('totalBlinks');
@@ -79,6 +91,26 @@ class DevWellPopup {
 
     this.elements.settingsBtn?.addEventListener('click', () => {
       void this.toggleSettings();
+    });
+
+    this.elements.guestModeBtn?.addEventListener('click', async () => {
+      console.log('Guest mode button clicked - entering guest mode');
+      try {
+        // Enter guest mode - show the guest mode section in the popup
+        this.toggleGuestMode();
+        console.log('Guest mode activated successfully');
+      } catch (err) {
+        console.error('Failed to enter guest mode:', err);
+        alert('Failed to enter guest mode. Error: ' + err.message);
+      }
+    });
+
+    this.elements.deleteAllGuestSessionsBtn?.addEventListener('click', () => {
+      void this.deleteAllGuestSessions();
+    });
+
+    this.elements.viewGuestAnalyticsBtn?.addEventListener('click', () => {
+      void this.openGuestAnalytics();
     });
 
     document.getElementById('backToDashboard')?.addEventListener('click', () => {
@@ -174,6 +206,7 @@ class DevWellPopup {
       'extensionAuth',
       'websiteAuth',
       'extensionSettings',
+      'guestModeActive',
     ]);
 
     this.sessionActive = Boolean(result.sessionActive);
@@ -184,6 +217,7 @@ class DevWellPopup {
     this.isLoggedIn = Boolean(auth?.token);
     this.userEmail = auth?.email ?? null;
     this.websiteAuth = result.websiteAuth ?? this.websiteAuth;
+    this.guestModeActive = Boolean(result.guestModeActive);
     
     // Load settings
     this.settings = result.extensionSettings || {
@@ -243,11 +277,13 @@ class DevWellPopup {
           token: data.token,
           email: email,
           userId: data.user?.id,
-        }
+        },
+        guestModeActive: false
       });
 
       this.isLoggedIn = true;
       this.userEmail = email;
+      this.guestModeActive = false;
       this.updateUI();
     } catch (err) {
       console.error('[DevWell Popup] Login error:', err);
@@ -262,6 +298,12 @@ class DevWellPopup {
     if (this.sessionActive) {
       await chrome.runtime.sendMessage({ action: 'requestStopSession' });
     }
+
+    if (this.guestModeActive) {
+      await this.toggleGuestMode();
+      return;
+    }
+
     await chrome.storage.local.remove('extensionAuth');
     await chrome.storage.local.set({ alerts: [] });
     this.alerts = [];
@@ -271,12 +313,14 @@ class DevWellPopup {
   }
 
   async handleSessionAction() {
-    if (!this.isLoggedIn) return;
+    if (!this.isLoggedIn && !this.guestModeActive) return;
 
-    const mismatch = this.getAuthMismatchMessage();
-    if (mismatch) {
-      this.showError(mismatch);
-      return;
+    if (this.isLoggedIn) {
+      const mismatch = this.getAuthMismatchMessage();
+      if (mismatch) {
+        this.showError(mismatch);
+        return;
+      }
     }
 
     if (!this.sessionActive) {
@@ -294,7 +338,7 @@ class DevWellPopup {
   }
 
   updateUI() {
-    if (!this.isLoggedIn) {
+    if (!this.isLoggedIn && !this.guestModeActive) {
       this.elements.loginSection.style.display = 'block';
       this.elements.dashboardSection.style.display = 'none';
       this.elements.statusIndicator.classList.remove('active');
@@ -305,13 +349,17 @@ class DevWellPopup {
     this.elements.loginSection.style.display = 'none';
     this.elements.dashboardSection.style.display = 'block';
 
+    if (this.elements.userEmail) {
+      this.elements.userEmail.textContent = this.isLoggedIn ? this.userEmail : '👤 Guest User';
+    }
+
     const statusText = this.elements.statusIndicator?.querySelector('.status-text');
     if (this.sessionActive) {
       this.elements.statusIndicator?.classList.add('active');
       if (statusText) statusText.textContent = 'Monitoring';
     } else {
       this.elements.statusIndicator?.classList.remove('active');
-      if (statusText) statusText.textContent = 'Ready';
+      if (statusText) statusText.textContent = this.isLoggedIn ? 'Ready' : 'Guest Mode';
     }
 
     if (this.elements.sessionBtn) {
@@ -322,6 +370,30 @@ class DevWellPopup {
     // Update settings button visibility based on login state
     if (this.elements.settingsBtn) {
       this.elements.settingsBtn.style.display = this.isLoggedIn ? 'inline-block' : 'none';
+    }
+    
+    // Update logout button: show only if logged in
+    if (this.elements.logoutBtn) {
+      this.elements.logoutBtn.style.display = (this.isLoggedIn || this.guestModeActive) ? 'inline-block' : 'none';
+      this.elements.logoutBtn.textContent = this.isLoggedIn ? 'Log Out' : 'Exit Guest';
+    }
+
+    // Update guest mode section visibility
+    if (this.elements.guestModeSection) {
+      this.elements.guestModeSection.style.display = (this.guestModeActive && !this.isLoggedIn) ? 'block' : 'none';
+      if (this.guestModeActive && !this.isLoggedIn) {
+        this.loadGuestSessions();
+      }
+    }
+
+    // Update footer visibility: hide in guest mode
+    if (this.elements.footer) {
+      this.elements.footer.style.display = this.isLoggedIn ? 'block' : 'none';
+    }
+    
+    // Update guest mode button visibility - show only on login page when not in guest mode
+    if (this.elements.guestModeBtn) {
+      this.elements.guestModeBtn.style.display = this.isLoggedIn || this.guestModeActive ? 'none' : 'block';
     }
 
     const sessionDuration = this.sessionData?.sessionDurationMinutes ?? 0;
@@ -560,6 +632,111 @@ class DevWellPopup {
 
     document.querySelector('.container')?.prepend(banner);
     window.setTimeout(() => banner.remove(), 3000);
+  }
+
+  // Guest Mode Methods
+  async toggleGuestMode() {
+    console.log('toggleGuestMode called, current state:', this.guestModeActive);
+    this.guestModeActive = !this.guestModeActive;
+    console.log('guestModeActive set to:', this.guestModeActive);
+    
+    try {
+      await chrome.storage.local.set({ guestModeActive: this.guestModeActive });
+      
+      if (!this.guestModeActive && this.sessionActive) {
+        // If exiting guest mode while session is active, stop the session
+        await chrome.runtime.sendMessage({ action: 'requestStopSession' });
+      }
+      
+      this.updateUI();
+    } catch (err) {
+      console.error('Failed to toggle guest mode:', err);
+    }
+  }
+
+  async loadGuestSessions() {
+    try {
+      const result = await chrome.storage.local.get('guestSessions');
+      const sessions = result.guestSessions || [];
+      
+      this.renderGuestSessions(sessions);
+    } catch (err) {
+      console.error('Failed to load guest sessions:', err);
+      this.showError('Failed to load sessions');
+    }
+  }
+
+  renderGuestSessions(sessions) {
+    if (!this.elements.guestSessionsGrid) return;
+    
+    if (sessions.length === 0) {
+      this.elements.guestSessionsGrid.innerHTML = '<div class="guest-empty">No local sessions yet. Start a session to begin monitoring.</div>';
+      return;
+    }
+    
+    this.elements.guestSessionsGrid.innerHTML = sessions.map((session, index) => {
+      const date = new Date(session.timestamp);
+      const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+      
+      return `
+        <div class="guest-session-card" data-index="${index}">
+          <h5>Session ${sessions.length - index}</h5>
+          <div class="date">${dateStr}</div>
+          <div class="stats">
+            <span>👁️ ${session.blinkRate || 'N/A'} BPM</span>
+            <span>😴 ${session.fatigueScore || 'N/A'}%</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+    
+    // Add click handlers to session cards
+    this.elements.guestSessionsGrid.querySelectorAll('.guest-session-card').forEach(card => {
+      card.addEventListener('click', () => {
+        const index = parseInt(card.getAttribute('data-index'));
+        this.viewGuestSessionDetails(sessions[index]);
+      });
+    });
+  }
+
+  viewGuestSessionDetails(session) {
+    // Show session details in a modal or new page
+    const details = `
+      Session Details:
+      Date: ${new Date(session.timestamp).toLocaleString()}
+      Duration: ${session.durationMinutes || 'N/A'} minutes
+      Blink Rate: ${session.blinkRate || 'N/A'} BPM
+      Total Blinks: ${session.blinkCount || 'N/A'}
+      Fatigue Score: ${session.fatigueScore || 'N/A'}%
+      Drowsy Events: ${session.drowsyEvents || 'N/A'}
+    `;
+    
+    alert(details); // Replace with modal in production
+  }
+
+  async deleteAllGuestSessions() {
+    if (!confirm('Are you sure you want to delete ALL local sessions? This cannot be undone.')) {
+      return;
+    }
+    
+    try {
+      await chrome.storage.local.remove('guestSessions');
+      this.loadGuestSessions();
+      this.showSuccess('All local sessions deleted successfully!');
+    } catch (err) {
+      console.error('Failed to delete guest sessions:', err);
+      this.showError('Failed to delete sessions');
+    }
+  }
+
+  async openGuestAnalytics() {
+    try {
+      const analyticsUrl = chrome.runtime.getURL('guest-analytics.html');
+      await chrome.tabs.create({ url: analyticsUrl });
+    } catch (err) {
+      console.error('Failed to open guest analytics:', err);
+      this.showError('Failed to open analytics');
+    }
   }
 }
 

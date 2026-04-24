@@ -39,13 +39,20 @@
       
       <div class="login-footer">
         <p>Demo account: demo@devwell.ai / demo123</p>
+        <button id="guestModeBtn" class="btn btn-outline btn-sm" style="margin-top: 12px; width: 100%;">
+          👤 Try Guest Mode (Local Only)
+        </button>
       </div>
     </div>
 
     <div id="dashboardSection" class="dashboard-section" style="display: none;">
+      <div id="userInfo" class="user-info">
+        <span class="user-email" id="userEmail"></span>
+        <button id="logoutBtn" class="btn-logout">Log Out</button>
+      </div>
+
       <div class="session-controls">
         <button id="sessionBtn" class="btn btn-primary">Start Session</button>
-        <button id="logoutBtn" class="btn btn-outline btn-sm">Log Out</button>
         <button id="settingsBtn" class="btn btn-outline btn-sm">⚙️ Settings</button>
       </div>
       
@@ -89,6 +96,26 @@
         <h3>Recent Alerts</h3>
         <div id="alertsList" class="alerts-list">
           <div class="alert-empty">No alerts yet</div>
+        </div>
+      </div>
+
+      <!-- Guest Mode Section - Local Sessions -->
+      <div class="guest-mode-section" id="guestModeSection" style="display: none;">
+        <div class="fatigue-header">
+          <h3>Local History</h3>
+        </div>
+        
+        <div class="guest-mode-grid" id="guestSessionsGrid">
+          <div class="guest-empty">No local sessions yet. Start a session to begin monitoring.</div>
+        </div>
+        
+        <div class="guest-mode-actions" style="display: flex; gap: 8px; margin-top: 10px;">
+          <button id="deleteAllGuestSessionsBtn" class="btn btn-outline btn-sm" style="flex: 1;">
+            🗑️ Clear
+          </button>
+          <button id="viewGuestAnalyticsBtn" class="btn btn-primary btn-sm" style="flex: 2;">
+            📊 View Analytics
+          </button>
         </div>
       </div>
 

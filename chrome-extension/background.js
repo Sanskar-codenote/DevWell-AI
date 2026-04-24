@@ -16,6 +16,7 @@ class DevWellBackground {
     this.lastBreakReminderBucket = 0;
     this.extensionAuth = { token: null, email: null };
     this.websiteAuth = { loggedIn: false, email: null };
+    this.guestModeActive = false;
     this.monitorTabId = null;
     this.isFinalizingSession = false;
     this.isClosingMonitorTab = false;
@@ -76,7 +77,8 @@ class DevWellBackground {
       'alerts',
       'extensionAuth',
       'websiteAuth',
-      'monitorTabId'
+      'monitorTabId',
+      'guestModeActive'
     ]);
 
     this.sessionActive = Boolean(result.sessionActive);
@@ -84,6 +86,7 @@ class DevWellBackground {
     this.alerts = Array.isArray(result.alerts) ? result.alerts : [];
     this.extensionAuth = result.extensionAuth ?? this.extensionAuth;
     this.websiteAuth = result.websiteAuth ?? this.websiteAuth;
+    this.guestModeActive = Boolean(result.guestModeActive);
     this.monitorTabId = result.monitorTabId ?? null;
     this.lastBreakReminderBucket = Math.floor((this.sessionData?.sessionDurationMinutes ?? 0) / 20);
 
@@ -201,6 +204,37 @@ class DevWellBackground {
     }
   }
 
+  async saveGuestSession(sessionData) {
+    if (!sessionData) return { saved: false };
+    
+    try {
+      const result = await chrome.storage.local.get('guestSessions');
+      const sessions = result.guestSessions || [];
+      
+      const newSession = {
+        timestamp: Date.now(),
+        durationMinutes: sessionData.sessionDurationMinutes || 0,
+        blinkRate: sessionData.sessionAvgBlinkRate || 0,
+        blinkCount: sessionData.blinkCount || 0,
+        fatigueScore: sessionData.fatigueScore || 0,
+        drowsyEvents: sessionData.longClosureEvents || 0
+      };
+      
+      // Add to beginning of array to show newest first
+      sessions.unshift(newSession);
+      
+      // Limit to 50 sessions to save space
+      const limitedSessions = sessions.slice(0, 50);
+      
+      await chrome.storage.local.set({ guestSessions: limitedSessions });
+      console.log('[DevWell Background] Guest session saved locally.');
+      return { saved: true };
+    } catch (err) {
+      console.error('[DevWell Background] Error saving guest session:', err);
+      return { saved: false };
+    }
+  }
+
   async finalizeSession(finalData, { reason = 'Session ended' } = {}) {
     if (this.isFinalizingSession) {
       return { success: true };
@@ -220,10 +254,20 @@ class DevWellBackground {
       await this.closeMonitorTab();
 
       const details = this.formatSessionDetails(sessionSnapshot);
-      const saveResult = await this.saveSessionToBackend(sessionSnapshot);
+      
+      let saveResult = { saved: false };
+      if (this.extensionAuth?.token) {
+        saveResult = await this.saveSessionToBackend(sessionSnapshot);
+      } else if (this.guestModeActive) {
+        saveResult = await this.saveGuestSession(sessionSnapshot);
+      }
+
       if (saveResult.saved) {
-        await this.pushAlert('session_saved', `Session saved. ${details}`);
-      } else if (saveResult.reason === 'not_logged_in') {
+        const message = this.guestModeActive && !this.extensionAuth?.token 
+          ? `Guest session saved locally. ${details}`
+          : `Session saved. ${details}`;
+        await this.pushAlert('session_saved', message);
+      } else if (!this.extensionAuth?.token && !this.guestModeActive) {
         await this.pushAlert('session_local_only', `Session ended (not saved: login required). ${details}`);
       } else if (sessionSnapshot) {
         await this.pushAlert('session_save_failed', `Session ended (save failed). ${details}`);
@@ -254,8 +298,9 @@ class DevWellBackground {
         return { success: true, sessionActive: this.sessionActive, sessionData: this.sessionData, alerts: this.alerts };
 
       case 'requestStartSession':
-        if (!this.extensionAuth?.token) return { success: false, error: 'User not logged in' };
-        {
+        if (!this.extensionAuth?.token && !this.guestModeActive) return { success: false, error: 'User not logged in' };
+        
+        if (this.extensionAuth?.token) {
           const mismatch = this.getAuthMismatchMessage();
           if (mismatch) {
             await this.pushAlert('auth_mismatch', mismatch);
@@ -343,13 +388,16 @@ class DevWellBackground {
     if (changes.alerts) this.alerts = Array.isArray(changes.alerts.newValue) ? changes.alerts.newValue : [];
     if (changes.extensionAuth) {
       this.extensionAuth = changes.extensionAuth.newValue ?? this.extensionAuth;
-      if (!this.extensionAuth.token && this.sessionActive) {
+      if (!this.extensionAuth.token && this.sessionActive && !this.guestModeActive) {
         await this.handleMessage({ action: 'requestStopSession' });
       }
       if (!this.extensionAuth.token) {
         this.alerts = [];
         await chrome.storage.local.set({ alerts: [] });
       }
+    }
+    if (changes.guestModeActive) {
+      this.guestModeActive = Boolean(changes.guestModeActive.newValue);
     }
     if (changes.websiteAuth) this.websiteAuth = changes.websiteAuth.newValue ?? this.websiteAuth;
     this.updateBadge();

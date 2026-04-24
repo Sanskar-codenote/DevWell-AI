@@ -38,6 +38,13 @@ Default local URLs:
 - Frontend: `http://localhost:5173` (or `5174`)
 - Backend: `http://localhost:3001`
 
+## Key Features
+
+- **Real-time Fatigue Detection**: Advanced computer vision via MediaPipe to monitor eye-blink frequency and drowsiness.
+- **Guest Mode**: Privacy-first, local-only usage. Monitor your wellness without an account—no data ever leaves your device.
+- **Session History & Analytics**: Track your wellness trends over time with detailed charts (synced to cloud for users, local for guests).
+- **Smart Alerting**: System-level notifications for break reminders (20-20-20 rule) and high fatigue levels.
+
 ## Production Deployment
 
 When deploying DevWell to a production environment, ensure the following configurations:

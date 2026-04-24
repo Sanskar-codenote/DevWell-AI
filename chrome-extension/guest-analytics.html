@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DevWell AI - Guest Analytics</title>
+  <script src="lib/chart.umd.js"></script>
+  <style>
+    :root {
+      --primary: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --bg-primary: #0f172a;
+      --bg-secondary: #1e293b;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-tertiary: #64748b;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      padding-bottom: 15px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .header h1 {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 600;
+    }
+
+    .back-button {
+      background: none;
+      border: none;
+      color: var(--text-primary);
+      font-size: 16px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 8px 12px;
+      border-radius: 6px;
+    }
+
+    .back-button:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    /* Time Period Tabs - Matching Main Analytics Page */
+    .time-period-tabs {
+      display: flex;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 12px;
+      padding: 4px;
+      margin-bottom: 20px;
+      gap: 4px;
+    }
+
+    .tab-button {
+      flex: 1;
+      padding: 8px 16px;
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .tab-button:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .tab-button.active {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+    }
+
+    /* Stats Grid - Matching Main Analytics Page */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+
+    .stat-card {
+      background-color: var(--bg-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 12px;
+      padding: 20px;
+    }
+
+    .stat-card .label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-tertiary);
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .stat-card .value {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--text-primary);
+      display: flex;
+      align-items: baseline;
+    }
+
+    .stat-card .unit {
+      font-size: 14px;
+      color: var(--text-tertiary);
+      margin-left: 8px;
+      font-weight: 400;
+    }
+
+    .stat-card .change {
+      font-size: 12px;
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .change-positive {
+      color: var(--primary);
+    }
+
+    .change-negative {
+      color: var(--danger);
+    }
+
+    .charts-section {
+      margin-top: 20px;
+    }
+
+    .chart-container {
+      background-color: var(--bg-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+
+    .chart-container h3 {
+      margin: 0 0 15px 0;
+      font-size: 16px;
+      color: var(--text-primary);
+    }
+
+    .chart-wrapper {
+      position: relative;
+      height: 300px;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--text-tertiary);
+    }
+
+    .empty-state .emoji {
+      font-size: 48px;
+      margin-bottom: 15px;
+    }
+
+    .insights-section {
+      margin-top: 30px;
+    }
+
+    .insights-section h2 {
+      font-size: 18px;
+      margin-bottom: 15px;
+      color: var(--text-primary);
+    }
+
+    .insights-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 15px;
+    }
+
+    .insight-card {
+      background-color: var(--bg-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      padding: 15px;
+    }
+
+    .insight-card h4 {
+      margin: 0 0 10px 0;
+      font-size: 14px;
+      color: var(--text-primary);
+    }
+
+    .insight-card .content {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .btn {
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      border: none;
+      margin-top: 15px;
+    }
+
+    .btn-primary {
+      background-color: var(--primary);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background-color: #059669;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <button id="backButton" class="back-button">← Back to Extension</button>
+      <h1>👤 Guest Analytics - Local Data</h1>
+      <div style="width: 24px;"></div>
+    </div>
+
+    <!-- Time Period Tabs - Matching Main Analytics Page -->
+    <div class="time-period-tabs">
+      <button class="tab-button active" data-period="weekly">This Week</button>
+      <button class="tab-button" data-period="monthly">This Month</button>
+    </div>
+
+    <!-- Stats Grid - Matching Main Analytics Page -->
+    <div class="stats-grid" id="statsGrid">
+      <div class="stat-card">
+        <div class="label">
+          <span>Avg Fatigue Score</span>
+        </div>
+        <div class="value">
+          <span id="avgFatigue">0</span><span class="unit">%</span>
+        </div>
+        <div class="change" id="fatigueChange">
+          <span>No change</span>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="label">
+          <span>Avg Blink Rate</span>
+        </div>
+        <div class="value">
+          <span id="avgBlinkRate">0</span><span class="unit">/min</span>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="label">
+          <span>Total Sessions</span>
+        </div>
+        <div class="value">
+          <span id="totalSessions">0</span>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="label">
+          <span>Total Monitoring Time</span>
+        </div>
+        <div class="value">
+          <span id="totalTime">0</span><span class="unit">min</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="charts-section" id="chartsSection">
+      <!-- Charts will be added dynamically -->
+      <div class="empty-state">
+        <div class="emoji">📊</div>
+        <div>No session data available for analytics.</div>
+        <div style="font-size: 12px; margin-top: 8px; color: var(--text-tertiary);">
+          Start monitoring sessions in guest mode to see your analytics here.
+        </div>
+      </div>
+    </div>
+
+    <div class="insights-section" id="insightsSection" style="display: none;">
+      <h2>💡 Personal Insights</h2>
+      <div class="insights-grid" id="insightsGrid">
+        <!-- Insights will be added dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <script src="guest-analytics.js"></script>
+</body>
+</html>

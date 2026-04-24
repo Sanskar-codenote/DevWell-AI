@@ -47,9 +47,12 @@
       "resources": [
         "monitor.html",
         "monitor.js",
+        "guest-analytics.html",
+        "guest-analytics.js",
         "lib/vision_bundle.js",
         "lib/face_landmarker.task",
-        "lib/wasm/*"
+        "lib/wasm/*",
+        "lib/chart.umd.js"
       ],
       "matches": ["<all_urls>"]
     }
