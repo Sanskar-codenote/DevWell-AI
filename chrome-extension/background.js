@@ -6,6 +6,14 @@ const APP_URL_PATTERNS = [
 ];
 
 const MONITOR_URL = 'monitor.html';
+const DEFAULT_NOTIFICATION_SETTINGS = {
+  lowFatigueThreshold: 50,
+  highFatigueThreshold: 80,
+  fatigueNotificationIntervalMinutes: 60,
+  enableModerateFatigueNotification: true,
+  enableHighFatigueNotification: true,
+  enableBreakNotification: true,
+};
 
 class DevWellBackground {
   constructor() {
@@ -16,6 +24,10 @@ class DevWellBackground {
     this.lastBreakReminderBucket = 0;
     this.extensionAuth = { token: null, email: null };
     this.websiteAuth = { loggedIn: false, email: null };
+    this.extensionSettings = { ...DEFAULT_NOTIFICATION_SETTINGS };
+    this.websiteSettings = { ...DEFAULT_NOTIFICATION_SETTINGS };
+    this.hasExtensionSettings = false;
+    this.hasWebsiteSettings = false;
     this.guestModeActive = false;
     this.monitorTabId = null;
     this.isFinalizingSession = false;
@@ -77,6 +89,8 @@ class DevWellBackground {
       'alerts',
       'extensionAuth',
       'websiteAuth',
+      'extensionSettings',
+      'websiteSettings',
       'monitorTabId',
       'guestModeActive'
     ]);
@@ -86,6 +100,10 @@ class DevWellBackground {
     this.alerts = Array.isArray(result.alerts) ? result.alerts : [];
     this.extensionAuth = result.extensionAuth ?? this.extensionAuth;
     this.websiteAuth = result.websiteAuth ?? this.websiteAuth;
+    this.hasExtensionSettings = Boolean(result.extensionSettings);
+    this.hasWebsiteSettings = Boolean(result.websiteSettings);
+    this.extensionSettings = this.normalizeNotificationSettings(result.extensionSettings);
+    this.websiteSettings = this.normalizeNotificationSettings(result.websiteSettings);
     this.guestModeActive = Boolean(result.guestModeActive);
     this.monitorTabId = result.monitorTabId ?? null;
     this.lastBreakReminderBucket = Math.floor((this.sessionData?.sessionDurationMinutes ?? 0) / 20);
@@ -149,6 +167,36 @@ class DevWellBackground {
     if (extensionEmail === websiteEmail) return null;
 
     return `Account mismatch: website is logged in as ${websiteEmail}, extension is logged in as ${extensionEmail}. Please use the same account.`;
+  }
+
+  normalizeNotificationSettings(settings) {
+    const base = settings ?? {};
+    const lowFatigueThreshold = Number(base.lowFatigueThreshold ?? DEFAULT_NOTIFICATION_SETTINGS.lowFatigueThreshold);
+    const highFatigueThreshold = Number(base.highFatigueThreshold ?? DEFAULT_NOTIFICATION_SETTINGS.highFatigueThreshold);
+    const fatigueNotificationIntervalMinutes = Number(
+      base.fatigueNotificationIntervalMinutes ?? DEFAULT_NOTIFICATION_SETTINGS.fatigueNotificationIntervalMinutes
+    );
+
+    return {
+      lowFatigueThreshold: Number.isFinite(lowFatigueThreshold) ? lowFatigueThreshold : DEFAULT_NOTIFICATION_SETTINGS.lowFatigueThreshold,
+      highFatigueThreshold: Number.isFinite(highFatigueThreshold) ? highFatigueThreshold : DEFAULT_NOTIFICATION_SETTINGS.highFatigueThreshold,
+      fatigueNotificationIntervalMinutes: Number.isFinite(fatigueNotificationIntervalMinutes)
+        ? fatigueNotificationIntervalMinutes
+        : DEFAULT_NOTIFICATION_SETTINGS.fatigueNotificationIntervalMinutes,
+      enableModerateFatigueNotification: base.enableModerateFatigueNotification !== false,
+      enableHighFatigueNotification: base.enableHighFatigueNotification !== false,
+      enableBreakNotification: base.enableBreakNotification ?? base.enable20MinNotification ?? true,
+    };
+  }
+
+  getEffectiveNotificationSettings() {
+    if (this.hasExtensionSettings) {
+      return this.normalizeNotificationSettings(this.extensionSettings);
+    }
+    if (this.hasWebsiteSettings) {
+      return this.normalizeNotificationSettings(this.websiteSettings);
+    }
+    return { ...DEFAULT_NOTIFICATION_SETTINGS };
   }
 
   async closeMonitorTab() {
@@ -371,10 +419,12 @@ class DevWellBackground {
 
       case 'syncWebsiteSettings':
         if (message.settings) {
-          await chrome.storage.local.set({ websiteSettings: message.settings });
+          this.hasWebsiteSettings = true;
+          this.websiteSettings = this.normalizeNotificationSettings(message.settings);
+          await chrome.storage.local.set({ websiteSettings: this.websiteSettings });
           
           // Also broadcast to any open extension popups
-          await this.broadcastSettingsToPopups(message.settings);
+          await this.broadcastSettingsToPopups(this.websiteSettings);
           
           return { success: true };
         }
@@ -403,6 +453,14 @@ class DevWellBackground {
       this.guestModeActive = Boolean(changes.guestModeActive.newValue);
     }
     if (changes.websiteAuth) this.websiteAuth = changes.websiteAuth.newValue ?? this.websiteAuth;
+    if (changes.extensionSettings) {
+      this.hasExtensionSettings = Boolean(changes.extensionSettings.newValue);
+      this.extensionSettings = this.normalizeNotificationSettings(changes.extensionSettings.newValue);
+    }
+    if (changes.websiteSettings) {
+      this.hasWebsiteSettings = Boolean(changes.websiteSettings.newValue);
+      this.websiteSettings = this.normalizeNotificationSettings(changes.websiteSettings.newValue);
+    }
     this.updateBadge();
     if (changes.sessionActive || changes.sessionData) {
       await this.broadcastState();
@@ -411,20 +469,31 @@ class DevWellBackground {
 
   async handleAlerts() {
     if (!this.sessionActive || !this.sessionData) return;
+    const settings = this.getEffectiveNotificationSettings();
     const now = Date.now();
     const fatigueScore = this.sessionData.fatigueScore ?? 0;
-    if (fatigueScore > 70 && (this.lastFatigueAlertAt === 0 || now - this.lastFatigueAlertAt >= 3600000)) {
-      this.lastFatigueAlertAt = now;
-      await this.pushAlert('fatigue_high', 'High fatigue detected. Please take a break now.');
-    } else if (fatigueScore > 40 && (this.lastFatigueAlertAt === 0 || now - this.lastFatigueAlertAt >= 3600000)) {
-      this.lastFatigueAlertAt = now;
-      await this.pushAlert('fatigue_moderate', 'Moderate fatigue detected. Consider a short break.');
+    const fatigueIntervalMs = Math.max(1, settings.fatigueNotificationIntervalMinutes) * 60 * 1000;
+    const fatigueCooldownReady = this.lastFatigueAlertAt === 0 || now - this.lastFatigueAlertAt >= fatigueIntervalMs;
+
+    if (fatigueCooldownReady) {
+      const isHighFatigue = fatigueScore > settings.highFatigueThreshold;
+      const isModerateFatigue = fatigueScore > settings.lowFatigueThreshold && !isHighFatigue;
+
+      if (isHighFatigue && settings.enableHighFatigueNotification) {
+        this.lastFatigueAlertAt = now;
+        await this.pushAlert('fatigue_high', 'High fatigue detected. Please take a break now.');
+      } else if (isModerateFatigue && settings.enableModerateFatigueNotification) {
+        this.lastFatigueAlertAt = now;
+        await this.pushAlert('fatigue_moderate', 'Moderate fatigue detected. Consider a short break.');
+      }
     }
 
-    const breakBucket = Math.floor((this.sessionData.sessionDurationMinutes ?? 0) / 20);
-    if (breakBucket > 0 && breakBucket > this.lastBreakReminderBucket) {
-      this.lastBreakReminderBucket = breakBucket;
-      await this.pushAlert('break', 'Time for a break. Follow the 20-20-20 rule.');
+    if (settings.enableBreakNotification) {
+      const breakBucket = Math.floor((this.sessionData.sessionDurationMinutes ?? 0) / 20);
+      if (breakBucket > 0 && breakBucket > this.lastBreakReminderBucket) {
+        this.lastBreakReminderBucket = breakBucket;
+        await this.pushAlert('break', 'Time for a break. Follow the 20-20-20 rule.');
+      }
     }
   }
 

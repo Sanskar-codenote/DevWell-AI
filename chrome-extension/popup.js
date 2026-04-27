@@ -71,9 +71,13 @@ class DevWellPopup {
     this.elements.cancelSettingsBtn = document.getElementById('cancelSettingsBtn');
     this.elements.lowFatigueThresholdInput = document.getElementById('lowFatigueThreshold');
     this.elements.highFatigueThresholdInput = document.getElementById('highFatigueThreshold');
-    this.elements.enable20MinNotificationInput = document.getElementById('enable20MinNotification');
+    this.elements.fatigueNotificationIntervalInput = document.getElementById('fatigueNotificationInterval');
+    this.elements.enableModerateFatigueNotificationInput = document.getElementById('enableModerateFatigueNotification');
+    this.elements.enableHighFatigueNotificationInput = document.getElementById('enableHighFatigueNotification');
+    this.elements.enableBreakNotificationInput = document.getElementById('enableBreakNotification');
     this.elements.lowFatigueValueDisplay = document.getElementById('lowFatigueValue');
     this.elements.highFatigueValueDisplay = document.getElementById('highFatigueValue');
+    this.elements.fatigueIntervalValueDisplay = document.getElementById('fatigueIntervalValue');
     
 
   }
@@ -142,6 +146,9 @@ class DevWellPopup {
     });
 
     this.elements.highFatigueThresholdInput?.addEventListener('input', () => {
+      this.updateSliderDisplay();
+    });
+    this.elements.fatigueNotificationIntervalInput?.addEventListener('input', () => {
       this.updateSliderDisplay();
     });
 
@@ -230,7 +237,10 @@ class DevWellPopup {
     this.settings = result.extensionSettings || {
       lowFatigueThreshold: 50,
       highFatigueThreshold: 80,
-      enable20MinNotification: true,
+      fatigueNotificationIntervalMinutes: 60,
+      enableModerateFatigueNotification: true,
+      enableHighFatigueNotification: true,
+      enableBreakNotification: true,
     };
     
 
@@ -554,8 +564,17 @@ class DevWellPopup {
       if (this.elements.highFatigueThresholdInput) {
         this.elements.highFatigueThresholdInput.value = String(this.settings.highFatigueThreshold);
       }
-      if (this.elements.enable20MinNotificationInput) {
-        this.elements.enable20MinNotificationInput.checked = Boolean(this.settings.enable20MinNotification);
+      if (this.elements.fatigueNotificationIntervalInput) {
+        this.elements.fatigueNotificationIntervalInput.value = String(this.settings.fatigueNotificationIntervalMinutes ?? 60);
+      }
+      if (this.elements.enableModerateFatigueNotificationInput) {
+        this.elements.enableModerateFatigueNotificationInput.checked = this.settings.enableModerateFatigueNotification !== false;
+      }
+      if (this.elements.enableHighFatigueNotificationInput) {
+        this.elements.enableHighFatigueNotificationInput.checked = this.settings.enableHighFatigueNotification !== false;
+      }
+      if (this.elements.enableBreakNotificationInput) {
+        this.elements.enableBreakNotificationInput.checked = this.settings.enableBreakNotification ?? this.settings.enable20MinNotification ?? true;
       }
       this.updateSliderDisplay();
     }
@@ -564,13 +583,19 @@ class DevWellPopup {
   updateSliderDisplay() {
     this.elements.lowFatigueValueDisplay.textContent = this.elements.lowFatigueThresholdInput.value;
     this.elements.highFatigueValueDisplay.textContent = this.elements.highFatigueThresholdInput.value;
+    if (this.elements.fatigueIntervalValueDisplay && this.elements.fatigueNotificationIntervalInput) {
+      this.elements.fatigueIntervalValueDisplay.textContent = this.elements.fatigueNotificationIntervalInput.value;
+    }
   }
 
   async saveSettings() {
     const newSettings = {
       lowFatigueThreshold: Number(this.elements.lowFatigueThresholdInput.value),
       highFatigueThreshold: Number(this.elements.highFatigueThresholdInput.value),
-      enable20MinNotification: this.elements.enable20MinNotificationInput.checked,
+      fatigueNotificationIntervalMinutes: Number(this.elements.fatigueNotificationIntervalInput.value),
+      enableModerateFatigueNotification: this.elements.enableModerateFatigueNotificationInput.checked,
+      enableHighFatigueNotification: this.elements.enableHighFatigueNotificationInput.checked,
+      enableBreakNotification: this.elements.enableBreakNotificationInput.checked,
     };
 
     try {

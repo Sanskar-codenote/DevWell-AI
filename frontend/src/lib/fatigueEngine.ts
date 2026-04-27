@@ -98,13 +98,32 @@ const BREAK_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
 const MAX_EYE_ASYMMETRY_RATIO = 1.8;
 const MIN_VALID_EYE_WIDTH = 0.018;
 const UNKNOWN_FRAME_RESET_MS = 2500;
-const FATIGUE_ALERT_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const REOPEN_STABILITY_MS = 90;
 const HIDDEN_READER_TIMEOUT_MS = 280;
 const HIDDEN_GRAB_TIMEOUT_MS = 280;
 const HIDDEN_LOOP_BACKOFF_MS = 40;
 const BACKGROUND_DROWSY_MIN_CLOSED_SAMPLES = 3;
 const BACKGROUND_SPARSE_GAP_MS = 700;
+
+interface NotificationSettings {
+  lowFatigueThreshold: number;
+  highFatigueThreshold: number;
+  fatigueNotificationIntervalMinutes: number;
+  enableModerateFatigueNotification: boolean;
+  enableHighFatigueNotification: boolean;
+  enableBreakNotification: boolean;
+}
+
+function getDefaultNotificationSettings(): NotificationSettings {
+  return {
+    lowFatigueThreshold: 50,
+    highFatigueThreshold: 80,
+    fatigueNotificationIntervalMinutes: 60,
+    enableModerateFatigueNotification: true,
+    enableHighFatigueNotification: true,
+    enableBreakNotification: true,
+  };
+}
 
 export class FatigueEngine {
   private faceMesh: FaceMeshInstance | null = null;
@@ -230,9 +249,41 @@ export class FatigueEngine {
   }
 
   private checkBreakReminder(now: number): void {
+    const settings = this.getNotificationSettings();
+    if (!settings.enableBreakNotification) return;
     if (now - this.lastBreakAlert >= BREAK_INTERVAL_MS) {
       this.lastBreakAlert = now;
       this.onAlert('break', 'Time for a break! Follow the 20-20-20 rule: Look at something 20 feet away for 20 seconds.');
+    }
+  }
+
+  private getNotificationSettings(): NotificationSettings {
+    const defaults = getDefaultNotificationSettings();
+    if (typeof localStorage === 'undefined') return defaults;
+
+    try {
+      const raw = localStorage.getItem('userSettings');
+      if (!raw) return defaults;
+      const parsed = JSON.parse(raw);
+
+      const lowFatigueThreshold = Number(parsed.lowFatigueThreshold ?? defaults.lowFatigueThreshold);
+      const highFatigueThreshold = Number(parsed.highFatigueThreshold ?? defaults.highFatigueThreshold);
+      const fatigueNotificationIntervalMinutes = Number(
+        parsed.fatigueNotificationIntervalMinutes ?? defaults.fatigueNotificationIntervalMinutes
+      );
+
+      return {
+        lowFatigueThreshold: Number.isFinite(lowFatigueThreshold) ? lowFatigueThreshold : defaults.lowFatigueThreshold,
+        highFatigueThreshold: Number.isFinite(highFatigueThreshold) ? highFatigueThreshold : defaults.highFatigueThreshold,
+        fatigueNotificationIntervalMinutes: Number.isFinite(fatigueNotificationIntervalMinutes)
+          ? fatigueNotificationIntervalMinutes
+          : defaults.fatigueNotificationIntervalMinutes,
+        enableModerateFatigueNotification: parsed.enableModerateFatigueNotification !== false,
+        enableHighFatigueNotification: parsed.enableHighFatigueNotification !== false,
+        enableBreakNotification: parsed.enableBreakNotification ?? parsed.enable20MinNotification ?? true,
+      };
+    } catch {
+      return defaults;
     }
   }
 
@@ -792,14 +843,19 @@ export class FatigueEngine {
     if (fatigueScore > 70) fatigueLevel = 'High Fatigue';
     else if (fatigueScore > 40) fatigueLevel = 'Moderate Fatigue';
 
-    if (
-      (fatigueLevel === 'Moderate Fatigue' || fatigueLevel === 'High Fatigue') &&
-      (this.lastFatigueAlertAt === 0 || now - this.lastFatigueAlertAt >= FATIGUE_ALERT_INTERVAL_MS)
-    ) {
-      this.lastFatigueAlertAt = now;
-      if (fatigueLevel === 'High Fatigue') {
+    const settings = this.getNotificationSettings();
+    const alertIntervalMs = Math.max(1, settings.fatigueNotificationIntervalMinutes) * 60 * 1000;
+    const shouldThrottle = this.lastFatigueAlertAt === 0 || now - this.lastFatigueAlertAt >= alertIntervalMs;
+
+    if (shouldThrottle) {
+      const isHigh = fatigueScore > settings.highFatigueThreshold;
+      const isModerate = fatigueScore > settings.lowFatigueThreshold && !isHigh;
+
+      if (isHigh && settings.enableHighFatigueNotification) {
+        this.lastFatigueAlertAt = now;
         this.onAlert('fatigue_high', 'High fatigue detected. Please take an immediate break.');
-      } else {
+      } else if (isModerate && settings.enableModerateFatigueNotification) {
+        this.lastFatigueAlertAt = now;
         this.onAlert('fatigue_moderate', 'Moderate fatigue detected. Consider taking a short break.');
       }
     }

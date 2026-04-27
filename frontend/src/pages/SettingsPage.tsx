@@ -5,7 +5,10 @@ import { Settings, Save, AlertCircle } from 'lucide-react';
 export interface SettingsData {
   lowFatigueThreshold: number;
   highFatigueThreshold: number;
-  enable20MinNotification: boolean;
+  fatigueNotificationIntervalMinutes: number;
+  enableModerateFatigueNotification: boolean;
+  enableHighFatigueNotification: boolean;
+  enableBreakNotification: boolean;
 }
 
 // Chrome extension types
@@ -32,7 +35,10 @@ export default function SettingsPage() {
   const { user } = useAuth();
   const [lowFatigueThreshold, setLowFatigueThreshold] = useState<number>(50);
   const [highFatigueThreshold, setHighFatigueThreshold] = useState<number>(80);
-  const [enable20MinNotification, setEnable20MinNotification] = useState<boolean>(true);
+  const [fatigueNotificationIntervalMinutes, setFatigueNotificationIntervalMinutes] = useState<number>(60);
+  const [enableModerateFatigueNotification, setEnableModerateFatigueNotification] = useState<boolean>(true);
+  const [enableHighFatigueNotification, setEnableHighFatigueNotification] = useState<boolean>(true);
+  const [enableBreakNotification, setEnableBreakNotification] = useState<boolean>(true);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,7 +53,12 @@ export default function SettingsPage() {
           const settings = JSON.parse(savedSettings);
           setLowFatigueThreshold(settings.lowFatigueThreshold || 50);
           setHighFatigueThreshold(settings.highFatigueThreshold || 80);
-          setEnable20MinNotification(settings.enable20MinNotification !== false);
+          setFatigueNotificationIntervalMinutes(settings.fatigueNotificationIntervalMinutes || 60);
+          setEnableModerateFatigueNotification(settings.enableModerateFatigueNotification !== false);
+          setEnableHighFatigueNotification(settings.enableHighFatigueNotification !== false);
+          setEnableBreakNotification(
+            settings.enableBreakNotification ?? settings.enable20MinNotification ?? true
+          );
         }
         
         // TODO: Load from backend API if available
@@ -56,7 +67,6 @@ export default function SettingsPage() {
         // if (response.ok) {
         //   setLowFatigueThreshold(data.lowFatigueThreshold || 50);
         //   setHighFatigueThreshold(data.highFatigueThreshold || 80);
-        //   setEnable20MinNotification(data.enable20MinNotification !== false);
         // }
       } catch (err) {
         console.error('Failed to load settings:', err);
@@ -76,7 +86,10 @@ export default function SettingsPage() {
         userId: user?.id,
         lowFatigueThreshold,
         highFatigueThreshold,
-        enable20MinNotification,
+        fatigueNotificationIntervalMinutes,
+        enableModerateFatigueNotification,
+        enableHighFatigueNotification,
+        enableBreakNotification,
         updatedAt: new Date().toISOString()
       };
       
@@ -136,7 +149,12 @@ export default function SettingsPage() {
       if (event.data?.type === 'DEVWELL_SETTINGS_SYNC') {
         setLowFatigueThreshold(event.data.settings.lowFatigueThreshold);
         setHighFatigueThreshold(event.data.settings.highFatigueThreshold);
-        setEnable20MinNotification(event.data.settings.enable20MinNotification);
+        setFatigueNotificationIntervalMinutes(event.data.settings.fatigueNotificationIntervalMinutes ?? 60);
+        setEnableModerateFatigueNotification(event.data.settings.enableModerateFatigueNotification !== false);
+        setEnableHighFatigueNotification(event.data.settings.enableHighFatigueNotification !== false);
+        setEnableBreakNotification(
+          event.data.settings.enableBreakNotification ?? event.data.settings.enable20MinNotification ?? true
+        );
       }
     };
 
@@ -206,22 +224,87 @@ export default function SettingsPage() {
               </p>
             </div>
 
-            {/* 20 Minute Notification Toggle */}
+            {/* Fatigue Alert Interval */}
+            <div>
+              <label htmlFor="fatigueNotificationInterval" className="block text-sm font-medium text-slate-300 mb-2">
+                Fatigue Alert Cooldown Interval
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  id="fatigueNotificationInterval"
+                  min="5"
+                  max="180"
+                  step="5"
+                  value={fatigueNotificationIntervalMinutes}
+                  onChange={(e) => setFatigueNotificationIntervalMinutes(Number(e.target.value))}
+                  className="flex-1"
+                />
+                <span className="text-lg font-medium text-cyan-400 w-16 text-center">
+                  {fatigueNotificationIntervalMinutes}m
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-1">
+                Minimum time between repeated fatigue notifications.
+              </p>
+            </div>
+
+            {/* Notification Toggles */}
             <div className="flex items-start gap-4">
               <div className="flex-1">
-                <label htmlFor="20minNotification" className="block text-sm font-medium text-slate-300 mb-2">
-                  20-Minute Break Reminders
+                <label htmlFor="moderateFatigueNotification" className="block text-sm font-medium text-slate-300 mb-2">
+                  Moderate Fatigue Notifications
                 </label>
                 <p className="text-xs text-slate-500">
-                  Get notified every 20 minutes to take a break and rest your eyes.
+                  Notify when score crosses your warning threshold.
                 </p>
               </div>
               <div className="flex items-center h-5">
                 <input
-                  id="20minNotification"
+                  id="moderateFatigueNotification"
                   type="checkbox"
-                  checked={enable20MinNotification}
-                  onChange={(e) => setEnable20MinNotification(e.target.checked)}
+                  checked={enableModerateFatigueNotification}
+                  onChange={(e) => setEnableModerateFatigueNotification(e.target.checked)}
+                  className="h-4 w-4 rounded border-white/20 bg-slate-700 text-emerald-400 focus:ring-emerald-400 focus:ring-2"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-start gap-4">
+              <div className="flex-1">
+                <label htmlFor="highFatigueNotification" className="block text-sm font-medium text-slate-300 mb-2">
+                  High Fatigue Notifications
+                </label>
+                <p className="text-xs text-slate-500">
+                  Notify when score crosses your critical threshold.
+                </p>
+              </div>
+              <div className="flex items-center h-5">
+                <input
+                  id="highFatigueNotification"
+                  type="checkbox"
+                  checked={enableHighFatigueNotification}
+                  onChange={(e) => setEnableHighFatigueNotification(e.target.checked)}
+                  className="h-4 w-4 rounded border-white/20 bg-slate-700 text-emerald-400 focus:ring-emerald-400 focus:ring-2"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-start gap-4">
+              <div className="flex-1">
+                <label htmlFor="breakNotification" className="block text-sm font-medium text-slate-300 mb-2">
+                  Break Reminder Notifications
+                </label>
+                <p className="text-xs text-slate-500">
+                  Send periodic break reminders (20-minute rule).
+                </p>
+              </div>
+              <div className="flex items-center h-5">
+                <input
+                  id="breakNotification"
+                  type="checkbox"
+                  checked={enableBreakNotification}
+                  onChange={(e) => setEnableBreakNotification(e.target.checked)}
                   className="h-4 w-4 rounded border-white/20 bg-slate-700 text-emerald-400 focus:ring-emerald-400 focus:ring-2"
                 />
               </div>
