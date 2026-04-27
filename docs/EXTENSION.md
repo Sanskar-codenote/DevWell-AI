@@ -1,6 +1,7 @@
 # DevWell Chrome Extension Documentation
 
 This document is the source of truth for the Chrome extension (`chrome-extension/`) behavior.
+Last Updated: 2026-04-27
 
 ## 1. What The Extension Does
 
@@ -11,9 +12,11 @@ The extension runs fatigue monitoring from a dedicated pinned monitor tab and su
 Core capabilities:
 - Session start/stop from popup.
 - Camera-based blink and fatigue detection.
-- Session summary save to backend.
-- Alert timeline with dismiss controls.
+- Session summary save to backend for authenticated users.
+- Guest Mode (local-only session saving and guest analytics).
+- Alert timeline with manual dismiss controls.
 - Auth consistency checks between website and extension accounts.
+- Settings synchronization between website and extension.
 
 ## 2. Main Components
 
@@ -25,35 +28,43 @@ Core capabilities:
 - `background.js`
   - Source of truth for extension session state.
   - Monitor tab lifecycle.
-  - Session finalization + backend save.
+  - Session finalization + backend/local save.
   - Alerts and badge state.
+  - Settings normalization and effective settings selection.
 - `monitor.html` / `monitor.js`
-  - Dedicated pinned runtime for camera + MediaPipe Tasks Vision detection.
+  - Dedicated runtime for camera + MediaPipe Tasks Vision detection.
 - `popup.html` / `popup.js` / `popup.css`
-  - Login/logout, start/stop, metrics, recent alerts.
+  - Login/logout, guest mode, start/stop, view analytics, metrics, recent alerts, settings UI.
 - `content.js`
-  - Bridge between website DOM attributes and extension state.
-  - Syncs website auth and website-visible extension state.
+  - Bridge between website DOM attributes and extension state/auth.
+  - Syncs settings updates to website.
 
 ## 3. Session Lifecycle
 
 Start flow:
-1. User logs into extension popup.
+1. User logs into popup or enables Guest Mode.
 2. Popup sends `requestStartSession` to background.
-3. Background validates auth and account consistency.
+3. Background validates auth/account consistency (when logged in).
 4. Background opens pinned `monitor.html` tab.
 5. Monitor sends `monitorStarted` and periodic `monitorMetrics`.
 
 Stop flow:
 1. Popup sends `requestStopSession`.
-2. Background asks monitor to stop camera streams.
+2. Background asks monitor tab to stop gracefully.
 3. Background finalizes session through one unified finalization path.
-4. Pinned monitor tab is closed automatically.
-5. Session summary is saved to backend (if possible).
+4. Monitor tab is closed automatically.
+5. Session summary is saved:
+   - Backend when authenticated.
+   - `guestSessions` in `chrome.storage.local` when in Guest Mode.
 6. Recent Alerts receives a save outcome entry.
 
 User-closes-monitor-tab flow:
 - `tabs.onRemoved` triggers finalization if session is active.
+
+Popup quick actions:
+- `Start Session` / `End Session`
+- `View Analytics` (opens website analytics for logged-in users, guest analytics page for guest mode)
+- `Settings` (available when logged in)
 
 ## 4. Detection Engine (Monitor Tab)
 
@@ -75,13 +86,13 @@ Alerts are managed in background storage and rendered in popup.
 
 Current behavior:
 - Recent Alerts are capped to last 5 entries.
-- Popup also shows last 5 in reverse chronological order.
-- User can manually dismiss each alert with `×`.
+- Popup renders latest alerts in reverse chronological order.
+- User can dismiss each alert via `×`.
 - Alerts are cleared on extension logout.
 
 Alert types include:
 - `fatigue_moderate`, `fatigue_high`, `break`
-- `session_saved`, `session_local_only`, `session_save_failed`, `session_error`
+- `session_saved`, `session_local_only`, `session_save_failed`, `session_error`, `session_ended`
 - `auth_mismatch`
 
 Chrome notifications are emitted for pushed alerts.
@@ -99,7 +110,29 @@ If mismatch occurs:
 - `auth_mismatch` alert is created.
 - User sees clear error messaging in popup.
 
-## 7. Data and Storage
+## 7. Settings Model
+
+Supported settings:
+- `lowFatigueThreshold`
+- `highFatigueThreshold`
+- `fatigueNotificationIntervalMinutes`
+- `enableModerateFatigueNotification`
+- `enableHighFatigueNotification`
+- `enableBreakNotification`
+
+Storage behavior:
+- Extension-local preferences are stored in `extensionSettings`.
+- Website-synced values are stored in `websiteSettings`.
+- Effective settings priority:
+  1. `extensionSettings`
+  2. `websiteSettings`
+  3. defaults
+
+Sync behavior:
+- Website -> extension: `syncWebsiteSettings` message to background.
+- Extension -> website: popup sends `syncSettings` to website tabs via content script.
+
+## 8. Data and Storage
 
 Background-managed keys in `chrome.storage.local` include:
 - `sessionActive`
@@ -109,6 +142,10 @@ Background-managed keys in `chrome.storage.local` include:
 - `websiteAuth`
 - `monitorTabId`
 - `sessionError`
+- `guestModeActive`
+- `guestSessions`
+- `extensionSettings`
+- `websiteSettings`
 
 Session save payload to backend:
 - `session_date`
@@ -117,7 +154,7 @@ Session save payload to backend:
 - `fatigue_score`
 - `long_closure_events`
 
-## 8. Website Bridge (Content Script)
+## 9. Website Bridge (Content Script)
 
 Content script reads/writes DOM attributes:
 - `data-devwell-extension-state`
@@ -125,21 +162,22 @@ Content script reads/writes DOM attributes:
 - `data-devwell-extension-command`
 
 Responsibilities:
-- Propagate extension state to website.
+- Propagate extension session state to website.
 - Read website auth into extension storage.
-- Forward website-originated start/stop/ping commands.
+- Handle website commands (`stop`, `ping`).
+- Forward settings sync messages to website (`DEVWELL_SETTINGS_SYNC`).
 
-## 9. Permissions
+## 10. Permissions
 
 From `manifest.json`:
-- `permissions`: `storage`, `notifications`, `activeTab`, `tabs`, `offscreen`
+- `permissions`: `storage`, `notifications`, `tabs`
 - `host_permissions`: `<all_urls>`
 
 Notes:
-- Content script itself still injects only on configured local app URLs.
-- Broad host permission removes popup "access required" blockers on unrelated pages.
+- Content script itself injects only on configured local app URLs.
+- Broad host permission avoids popup "access required" blockers on unrelated pages.
 
-## 10. Install and Run (Local)
+## 11. Install and Run (Local)
 
 1. Start backend:
 ```bash
@@ -152,19 +190,18 @@ npm start
 - Enable Developer mode
 - Load unpacked: `chrome-extension/`
 - Pin extension
-3. Open popup, log in, and start session.
+3. Open popup, log in (or continue as guest), and start session.
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 - Monitor tab not opening:
-  - Check login state in popup.
+  - Check login/guest state in popup.
   - Check `requestStartSession` errors in service worker logs.
 - Session not saving:
   - Verify backend running at `http://localhost:3001`.
-  - Verify `extensionAuth.token` is present.
+  - Verify `extensionAuth.token` is present for cloud save.
 - Account mismatch blocks start:
   - Ensure website and extension are logged in with same email.
 - No metrics while hidden:
   - Verify camera permission in monitor tab.
   - Check monitor console for `ImageCapture` fallback warnings.
-

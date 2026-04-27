@@ -1,34 +1,48 @@
 # Guest Mode Technical Documentation
 
-Guest Mode provides a privacy-focused, local-only experience for DevWell AI users who prefer not to create an account. This document outlines the technical implementation, data flow, and architecture of the Guest Mode feature within the Chrome Extension.
+Guest Mode provides a privacy-focused, local-only experience for DevWell users who prefer not to create an account. This document outlines the implementation, data flow, and behavior of Guest Mode in the Chrome extension.
+Last Updated: 2026-04-27
 
 ## 1. Architecture Overview
 
-Guest Mode bypasses the standard JWT-based authentication flow, allowing the extension to operate independently of the backend API for session tracking and analytics.
+Guest Mode bypasses JWT login and allows monitoring without backend auth.
 
-### Key Components:
-- **`popup.js`**: Manages the UI transition between Login and Guest states, persisting the choice in local storage.
-- **`background.js`**: Acts as the orchestrator for monitoring sessions, handling session finalization, and saving data locally when in Guest Mode.
-- **`chrome.storage.local`**: The primary database for Guest Mode, storing the active state, settings, and session history.
+### Key Components
+- `popup.js`: manages login/guest UI transitions and guest analytics access.
+- `background.js`: orchestrates sessions, finalization, alerts, and local guest persistence.
+- `monitor.js`: runs camera + MediaPipe detection and streams metrics to background.
+- `chrome.storage.local`: stores guest state and session history.
 
 ## 2. State Management
 
-The Guest Mode state is persisted using the `guestModeActive` key in `chrome.storage.local`.
+Guest Mode state is persisted as `guestModeActive` in `chrome.storage.local`.
 
-- **Entering Guest Mode**: Triggered by the "Continue as Guest" button in the login screen. Sets `guestModeActive: true`.
-- **Exiting Guest Mode**: Triggered by the "Exit Guest" button (shared with Logout). Sets `guestModeActive: false` and stops any active monitoring.
-- **Auto-Cleanup**: If a user logs in successfully, `guestModeActive` is automatically set to `false` to prevent state conflicts.
+- Entering Guest Mode:
+  - Triggered by "Continue as Guest" in popup login section.
+  - Sets `guestModeActive: true`.
+- Exiting Guest Mode:
+  - Triggered by "Exit Guest" (shared logout button).
+  - Sets `guestModeActive: false`.
+  - Stops active session if one is running.
+- Auto-cleanup:
+  - Successful extension login sets `guestModeActive: false`.
 
 ## 3. Session Lifecycle (Guest)
 
-1.  **Start Request**: When the user clicks "Start Session", `background.js` checks if either a token exists OR `guestModeActive` is true.
-2.  **Monitoring**: The `monitor.html` tab runs the standard MediaPipe detection loop and streams metrics back to the background script.
-3.  **Finalization**: When the session stops, `background.js` calls `finalizeSession()`.
-4.  **Local Save**: Instead of calling the `/api/v1/sessions` endpoint, the background script calls `saveGuestSession()`, which prepends the metrics to a `guestSessions` array in local storage.
+1. Start request:
+  - `requestStartSession` is allowed when `guestModeActive` is true (even without token).
+2. Monitoring:
+  - `monitor.html` runs detection and sends `monitorStarted` + `monitorMetrics`.
+3. Finalization:
+  - Background finalizes through the same unified path used by authenticated mode.
+4. Local save:
+  - Background calls `saveGuestSession()` instead of `/api/v1/sessions`.
+5. Alert outcome:
+  - A `session_saved` alert is pushed with guest-local save messaging.
 
 ## 4. Data Schema (Local Storage)
 
-Guest sessions are stored as an array of objects under the `guestSessions` key:
+Guest sessions are stored as an array under `guestSessions`:
 
 ```json
 {
@@ -45,18 +59,31 @@ Guest sessions are stored as an array of objects under the `guestSessions` key:
 }
 ```
 
-*Note: The history is currently capped at the latest 50 sessions to optimize storage usage.*
+Notes:
+- Newest sessions are prepended.
+- History is capped at latest 50 sessions.
 
-## 5. Guest Analytics
+## 5. Guest Dashboard and Controls (Popup)
 
-The Guest Analytics page (`guest-analytics.html`) is a standalone dashboard for visualizing local data.
+In Guest Mode popup UI:
+- Session controls remain available (start/end).
+- "View Analytics" opens `guest-analytics.html`.
 
-- **Library**: Uses `Chart.js` (bundled locally in `lib/chart.umd.js` for offline support and security).
-- **Security**: Complies with Manifest V3 Content Security Policy (CSP) by utilizing an external logic file (`guest-analytics.js`) instead of inline scripts.
-- **Visualization**: Renders line charts for Blink Rate and Fatigue trends, and bar charts for session duration.
+## 6. Guest Analytics Page
 
-## 6. Security & Privacy
+`guest-analytics.html` is a standalone local analytics dashboard.
 
-- **On-Device Only**: No data collected in Guest Mode is ever sent to the DevWell servers.
-- **CSP Compliance**: All scripts are externalized, and `wasm-unsafe-eval` is used only where required by the MediaPipe engine.
-- **Data Control**: Users can clear their entire local history at any time using the "Clear History" button in the popup dashboard.
+- Data source: `guestSessions` from `chrome.storage.local`.
+- Library: bundled `Chart.js` (`lib/chart.umd.js`).
+- Period tabs: weekly (last 7 days) and monthly (last 30 days).
+- Visuals:
+  - Blink Rate trend (line)
+  - Fatigue Score trend (line)
+  - Session Duration trend (bar)
+- Additional summary/insight cards are computed client-side.
+
+## 7. Security & Privacy
+
+- On-device only: guest session data is not uploaded to DevWell servers.
+- CSP compliant: scripts are externalized (no inline script dependency).
+- MediaPipe compatibility: `wasm-unsafe-eval` is used only where required by engine runtime.

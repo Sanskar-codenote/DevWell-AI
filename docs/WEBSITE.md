@@ -1,6 +1,7 @@
 # DevWell Website Documentation
 
 This document is the source of truth for the web app (`frontend/`) and API (`backend/`) behavior.
+Last Updated: 2026-04-27
 
 ## 1. What The Website Does
 
@@ -9,7 +10,8 @@ DevWell Website is a React + TypeScript app that lets authenticated users:
 - View real-time metrics (blink count, blink rate, fatigue score, drowsy events).
 - Save completed sessions to the backend.
 - Review weekly/monthly analytics and session history.
-- Integrate with the Chrome extension in read-only mirror mode when extension monitoring is active.
+- Configure fatigue/break notification settings.
+- Integrate with the Chrome extension in mirror mode when extension monitoring is active.
 
 Privacy model:
 - Camera processing is local on the client.
@@ -21,10 +23,12 @@ Privacy model:
 ## Frontend
 - Framework: React 19 + TypeScript + Vite.
 - Primary contexts:
-  - `AuthContext`: auth token lifecycle and user profile.
-  - `SessionContext`: fatigue session ownership, alerts, extension bridging, and persistence.
+  - `AuthContext`: auth token lifecycle, user profile, extension-auth mismatch checks.
+  - `SessionContext`: fatigue session ownership, multi-tab sync, alerts, extension bridging.
 - Core engine:
   - `FatigueEngine` in `frontend/src/lib/fatigueEngine.ts`.
+- Main routes:
+  - `/dashboard`, `/analytics`, `/settings`
 
 ## Backend
 - Framework: Express 5 + PostgreSQL.
@@ -46,6 +50,9 @@ Privacy model:
 Website also publishes auth state to DOM for extension sync:
 - Attribute: `data-devwell-extension-auth`
 - Payload includes `loggedIn` and `email`.
+
+Account consistency behavior:
+- Website login/register is blocked if the extension is logged in with a different email.
 
 ## 4. Session Engine (Website Mode)
 
@@ -90,30 +97,47 @@ Storage keys (localStorage):
 Behavior:
 - Owner tab runs engine and heartbeats shared state.
 - Non-owner tabs mirror metrics.
-- If owner disappears, visible follower tab can take over.
+- If owner disappears, a visible follower tab can take over.
 - On reload with orphaned state, session is cleaned and user is prompted to start again.
 
 ## 6. Extension Integration (Website Side)
 
 When extension is available and authoritative:
 - Website switches to extension-mirrored metrics.
-- Website sends extension commands via DOM attribute:
-  - `data-devwell-extension-command`
-- Extension publishes state via:
+- Dashboard shows extension-active UX and defers primary control to extension popup.
+- Website exchanges state through DOM attributes:
   - `data-devwell-extension-state`
+  - `data-devwell-extension-auth`
+  - `data-devwell-extension-command`
 
-In this mode, website session controls defer to extension session control.
+Current command usage from website side:
+- `stop` and `ping` are actively used in extension-controlled mode.
 
-## 7. Alerts
+## 7. Settings Sync
+
+Website settings are saved in local storage under `userSettings` and include:
+- `lowFatigueThreshold`
+- `highFatigueThreshold`
+- `fatigueNotificationIntervalMinutes`
+- `enableModerateFatigueNotification`
+- `enableHighFatigueNotification`
+- `enableBreakNotification`
+
+Sync behavior:
+- Website -> extension via `syncWebsiteSettings` runtime message (with storage fallback).
+- Extension -> website via content-script `syncSettings` message and `window.postMessage` (`DEVWELL_SETTINGS_SYNC`).
+
+## 8. Alerts
 
 Website alerts include:
 - Fatigue moderate/high.
 - Break reminders.
 - Save failures.
+- Informational ownership/session continuity messages.
 
 High-fatigue alert includes optional sound cue and browser notification (if granted).
 
-## 8. Backend API Contract
+## 9. Backend API Contract
 
 ## Auth
 - `POST /api/v1/auth/register`
@@ -129,7 +153,10 @@ High-fatigue alert includes optional sound cue and browser notification (if gran
 - `GET /api/v1/analytics/weekly` (auth required)
 - `GET /api/v1/analytics/monthly` (auth required)
 
-## 9. Local Development
+## Health
+- `GET /api/health`
+
+## 10. Local Development
 
 Requirements:
 - Node.js
@@ -154,9 +181,9 @@ Default local URLs:
 - Frontend: `http://localhost:5173` (or `5174`)
 - Backend: `http://localhost:3001`
 
-## 10. Operational Notes
+## 11. Operational Notes
 
-- CORS allows localhost web origins and `chrome-extension://*` origins.
+- CORS allows localhost web origins and Chrome extension origins.
+- If `EXTENSION_ID` is set, only that extension origin is accepted.
 - Production-only request rate limiting is applied under `/api/`.
 - Session save happens at session stop; analytics read from stored session summaries.
-

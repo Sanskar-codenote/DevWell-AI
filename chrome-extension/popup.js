@@ -38,24 +38,10 @@ class DevWellPopup {
     this.elements.userEmail = document.getElementById('userEmail');
     
     this.elements.sessionBtn = document.getElementById('sessionBtn');
+    this.elements.viewAnalyticsBtn = document.getElementById('viewAnalyticsBtn');
     this.elements.settingsBtn = document.getElementById('settingsBtn');
-    this.elements.settingsBtnText = document.getElementById('settingsBtnText');
     this.elements.guestModeBtn = document.getElementById('guestModeBtn');
     this.elements.statusIndicator = document.getElementById('statusIndicator');
-    
-    // Guest mode elements
-    this.elements.guestModeSection = document.getElementById('guestModeSection');
-    this.elements.deleteAllGuestSessionsBtn = document.getElementById('deleteAllGuestSessionsBtn');
-    this.elements.viewGuestAnalyticsBtn = document.getElementById('viewGuestAnalyticsBtn');
-    this.elements.guestSessionsGrid = document.getElementById('guestSessionsGrid');
-
-    // Confirmation Modal Elements
-    this.elements.confirmModal = document.getElementById('confirmModal');
-    this.elements.cancelDeleteBtn = document.getElementById('cancelDeleteBtn');
-    this.elements.confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
-
-
-    this.elements.footer = document.querySelector('.footer');
     this.elements.sessionTime = document.getElementById('sessionTime');
     this.elements.blinkRate = document.getElementById('blinkRate');
     this.elements.totalBlinks = document.getElementById('totalBlinks');
@@ -112,22 +98,6 @@ class DevWellPopup {
       }
     });
 
-    this.elements.deleteAllGuestSessionsBtn?.addEventListener('click', () => {
-      void this.deleteAllGuestSessions();
-    });
-
-    this.elements.viewGuestAnalyticsBtn?.addEventListener('click', () => {
-      void this.openGuestAnalytics();
-    });
-
-    this.elements.cancelDeleteBtn?.addEventListener('click', () => {
-      if (this.elements.confirmModal) this.elements.confirmModal.style.display = 'none';
-    });
-
-    this.elements.confirmDeleteBtn?.addEventListener('click', () => {
-      void this.executeDeleteAllSessions();
-    });
-
     document.getElementById('backToDashboard')?.addEventListener('click', () => {
       this.toggleSettings();
     });
@@ -152,11 +122,11 @@ class DevWellPopup {
       this.updateSliderDisplay();
     });
 
-    document.getElementById('openDashboardBtn')?.addEventListener('click', () => {
-      void this.openAppRoute('/dashboard');
-    });
-
-    document.getElementById('viewAnalyticsBtn')?.addEventListener('click', () => {
+    this.elements.viewAnalyticsBtn?.addEventListener('click', () => {
+      if (this.guestModeActive && !this.isLoggedIn) {
+        void this.openGuestAnalytics();
+        return;
+      }
       void this.openAppRoute('/analytics');
     });
 
@@ -408,17 +378,8 @@ class DevWellPopup {
       this.elements.logoutBtn.textContent = this.isLoggedIn ? 'Log Out' : 'Exit Guest';
     }
 
-    // Update guest mode section visibility
-    if (this.elements.guestModeSection) {
-      this.elements.guestModeSection.style.display = (this.guestModeActive && !this.isLoggedIn) ? 'block' : 'none';
-      if (this.guestModeActive && !this.isLoggedIn) {
-        this.loadGuestSessions();
-      }
-    }
-
-    // Update footer visibility: hide in guest mode
-    if (this.elements.footer) {
-      this.elements.footer.style.display = this.isLoggedIn ? 'block' : 'none';
+    if (this.elements.viewAnalyticsBtn) {
+      this.elements.viewAnalyticsBtn.style.display = 'inline-block';
     }
     
     // Update guest mode button visibility - show only on login page when not in guest mode
@@ -691,95 +652,6 @@ class DevWellPopup {
       this.updateUI();
     } catch (err) {
       console.error('Failed to toggle guest mode:', err);
-    }
-  }
-
-  async loadGuestSessions() {
-    try {
-      const result = await chrome.storage.local.get('guestSessions');
-      const sessions = result.guestSessions || [];
-      
-      this.renderGuestSessions(sessions);
-    } catch (err) {
-      console.error('Failed to load guest sessions:', err);
-      this.showError('Failed to load sessions');
-    }
-  }
-
-  renderGuestSessions(sessions) {
-    if (!this.elements.guestSessionsGrid) return;
-    
-    // Enable/Disable buttons based on session count
-    if (this.elements.deleteAllGuestSessionsBtn) {
-      this.elements.deleteAllGuestSessionsBtn.disabled = sessions.length === 0;
-    }
-    
-    if (this.elements.viewGuestAnalyticsBtn) {
-      this.elements.viewGuestAnalyticsBtn.disabled = sessions.length === 0;
-    }
-    
-    if (sessions.length === 0) {
-      this.elements.guestSessionsGrid.innerHTML = '<div class="guest-empty">No local sessions yet. Start a session to begin monitoring.</div>';
-      return;
-    }
-    
-    this.elements.guestSessionsGrid.innerHTML = sessions.map((session, index) => {
-      const date = new Date(session.timestamp);
-      const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
-      
-      return `
-        <div class="guest-session-card" data-index="${index}">
-          <h5>Session ${sessions.length - index}</h5>
-          <div class="date">${dateStr}</div>
-          <div class="stats">
-            <span>👁️ ${session.blinkRate || 'N/A'} BPM</span>
-            <span>😴 ${session.fatigueScore || 'N/A'}%</span>
-          </div>
-        </div>
-      `;
-    }).join('');
-    
-    // Add click handlers to session cards
-    this.elements.guestSessionsGrid.querySelectorAll('.guest-session-card').forEach(card => {
-      card.addEventListener('click', () => {
-        const index = parseInt(card.getAttribute('data-index'));
-        this.viewGuestSessionDetails(sessions[index]);
-      });
-    });
-  }
-
-  viewGuestSessionDetails(session) {
-    // Show session details in a modal or new page
-    const details = `
-      Session Details:
-      Date: ${new Date(session.timestamp).toLocaleString()}
-      Duration: ${session.durationMinutes || 'N/A'} minutes
-      Blink Rate: ${session.blinkRate || 'N/A'} BPM
-      Total Blinks: ${session.blinkCount || 'N/A'}
-      Fatigue Score: ${session.fatigueScore || 'N/A'}%
-      Drowsy Events: ${session.drowsyEvents || 'N/A'}
-    `;
-    
-    alert(details); // Replace with modal in production
-  }
-
-  async deleteAllGuestSessions() {
-    if (this.elements.confirmModal) {
-      this.elements.confirmModal.style.display = 'flex';
-    }
-  }
-
-  async executeDeleteAllSessions() {
-    try {
-      await chrome.storage.local.remove('guestSessions');
-      this.loadGuestSessions();
-      if (this.elements.confirmModal) {
-        this.elements.confirmModal.style.display = 'none';
-      }
-      this.showSuccess('All local sessions deleted successfully!');
-    } catch (err) {
-      console.error('Failed to delete guest sessions:', err);
-      this.showError('Failed to delete sessions');
     }
   }
 
