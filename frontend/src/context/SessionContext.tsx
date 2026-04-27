@@ -63,6 +63,7 @@ interface SessionContextType {
   isStarting: boolean;
   isSessionOwner: boolean;
   extensionAvailable: boolean;
+  extensionAuthMismatch: string | null;
   startSession: (visibleVideoEl?: HTMLVideoElement) => Promise<void>;
   stopSession: () => Promise<void>;
   dismissAlert: (id: number) => void;
@@ -124,6 +125,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<FatigueState>(defaultState);
   const [externalState, setExternalState] = useState<FatigueState | null>(null);
   const [extensionAvailable, setExtensionAvailable] = useState(false);
+  const [extensionAuthEmail, setExtensionAuthEmail] = useState<string | null>(null);
+  const [extensionAuthLoggedIn, setExtensionAuthLoggedIn] = useState(false);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [saving, setSaving] = useState(false);
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
@@ -356,10 +359,26 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return true;
   }, []);
 
+  const extensionAuthMismatch = useCallback((): string | null => {
+    if (!extensionAvailable || !extensionAuthLoggedIn || !extensionAuthEmail || !user?.email) return null;
+
+    const websiteEmail = String(user.email).trim().toLowerCase();
+    const extEmail = String(extensionAuthEmail).trim().toLowerCase();
+    if (!websiteEmail || !extEmail || websiteEmail === extEmail) return null;
+
+    return `Website account (${user.email}) and extension account (${extensionAuthEmail}) must match.`;
+  }, [extensionAuthEmail, extensionAuthLoggedIn, extensionAvailable, user?.email]);
+
   const startSession = useCallback(async (visibleVideoEl?: HTMLVideoElement) => {
     if (isStarting) return;
 
     if (extensionAvailable) {
+      const mismatchMessage = extensionAuthMismatch();
+      if (mismatchMessage) {
+        handleAlert('error', mismatchMessage);
+        return;
+      }
+
       if (extensionCommandInFlightRef.current) return;
       extensionCommandInFlightRef.current = true;
       document.documentElement.setAttribute(
@@ -395,7 +414,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (success && visibleVideoEl && videoRef.current?.srcObject) {
       visibleVideoEl.srcObject = videoRef.current.srcObject;
     }
-  }, [claimOwnership, extensionAvailable, isStarting, startOwnedSession, syncFromSharedSnapshot]);
+  }, [claimOwnership, extensionAuthMismatch, extensionAvailable, handleAlert, isStarting, startOwnedSession, syncFromSharedSnapshot]);
 
   const stopSession = useCallback(async () => {
     if (extensionAvailable) {
@@ -572,14 +591,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       if (!raw) {
         setExtensionAvailable(false);
         setExternalState(null);
+        setExtensionAuthLoggedIn(false);
+        setExtensionAuthEmail(null);
         return;
       }
 
       try {
         const parsed = JSON.parse(raw);
-        if (parsed?.source === 'extension' && parsed?.engine === 'extension') {
+        if (parsed?.source === 'extension') {
           setExtensionAvailable(true);
           setExternalState(parsed.sessionData ?? null);
+          setExtensionAuthLoggedIn(Boolean(parsed?.extensionAuth?.loggedIn));
+          setExtensionAuthEmail(parsed?.extensionAuth?.email ?? null);
           if (parsed.sessionActive) {
             setIsSessionOwner(false);
           }
@@ -587,9 +610,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         }
         setExtensionAvailable(false);
         setExternalState(null);
+        setExtensionAuthLoggedIn(false);
+        setExtensionAuthEmail(null);
       } catch {
         setExtensionAvailable(false);
         setExternalState(null);
+        setExtensionAuthLoggedIn(false);
+        setExtensionAuthEmail(null);
       }
     };
 
@@ -637,6 +664,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       isStarting,
       isSessionOwner: !extensionAvailable && isSessionOwner,
       extensionAvailable,
+      extensionAuthMismatch: extensionAuthMismatch(),
       startSession,
       stopSession,
       dismissAlert,

@@ -29,7 +29,7 @@ function getFatigueRingColor(score: number): string {
 
 export default function DashboardPage() {
   const {
-    state, alerts, sessionSummary, saving, videoRef, isStarting, isSessionOwner, extensionAvailable,
+    state, alerts, sessionSummary, saving, videoRef, isStarting, isSessionOwner, extensionAvailable, extensionAuthMismatch,
     startSession, stopSession, dismissAlert, clearSummary,
   } = useSession();
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -132,6 +132,20 @@ export default function DashboardPage() {
                 Your DevWell Chrome Extension is active. Use the extension popup to start/stop sessions. 
                 This dashboard will display real-time metrics from the extension.
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {extensionAuthMismatch && (
+        <div className="mb-6 bg-red-500/10 border border-red-500/20 rounded-2xl p-4">
+          <div className="flex items-start gap-3">
+            <div className="h-8 w-8 rounded-lg bg-red-500/20 flex items-center justify-center shrink-0 mt-0.5">
+              <AlertTriangle className="h-4 w-4 text-red-400" />
+            </div>
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-red-400 mb-1">Account Mismatch</h3>
+              <p className="text-xs text-red-300/90 leading-relaxed">{extensionAuthMismatch}</p>
             </div>
           </div>
         </div>

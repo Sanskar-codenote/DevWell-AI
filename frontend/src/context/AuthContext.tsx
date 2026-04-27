@@ -3,6 +3,7 @@ import api from '../lib/api';
 import {
   clearPersistedSession,
   EXTENSION_AUTH_ATTRIBUTE,
+  EXTENSION_STATE_ATTRIBUTE,
 } from '../lib/extensionSync';
 
 interface User {
@@ -20,6 +21,32 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 const initialToken = localStorage.getItem('devwell_token');
+
+function getExtensionEmailMismatchMessage(nextEmail: string): string | null {
+  if (typeof document === 'undefined') return null;
+
+  const rawState = document.documentElement.getAttribute(EXTENSION_STATE_ATTRIBUTE);
+  if (!rawState) return null;
+
+  try {
+    const parsed = JSON.parse(rawState);
+    if (parsed?.source !== 'extension') return null;
+
+    const extensionLoggedIn = Boolean(parsed?.extensionAuth?.loggedIn);
+    const extensionEmail = typeof parsed?.extensionAuth?.email === 'string'
+      ? parsed.extensionAuth.email.trim().toLowerCase()
+      : '';
+    const websiteEmail = nextEmail.trim().toLowerCase();
+
+    if (!extensionLoggedIn || !extensionEmail || !websiteEmail || extensionEmail === websiteEmail) {
+      return null;
+    }
+
+    return `Website login blocked: extension is logged in as ${parsed.extensionAuth.email}. Please use the same email or log out from extension first.`;
+  } catch {
+    return null;
+  }
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -73,6 +100,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [token, user]);
 
   const login = async (email: string, password: string) => {
+    const mismatchMessage = getExtensionEmailMismatchMessage(email);
+    if (mismatchMessage) {
+      throw new Error(mismatchMessage);
+    }
+
     const res = await api.post('/auth/login', { email, password });
     localStorage.setItem('devwell_token', res.data.token);
     setToken(res.data.token);
@@ -82,6 +114,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const register = async (email: string, password: string) => {
+    const mismatchMessage = getExtensionEmailMismatchMessage(email);
+    if (mismatchMessage) {
+      throw new Error(mismatchMessage);
+    }
+
     const res = await api.post('/auth/register', { email, password });
     localStorage.setItem('devwell_token', res.data.token);
     setToken(res.data.token);
