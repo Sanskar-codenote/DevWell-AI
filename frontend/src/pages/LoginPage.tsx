@@ -3,7 +3,6 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Activity, Eye, ArrowRight } from 'lucide-react';
 import { getErrorMessage } from '../lib/api';
-import brandLogo from '../assets/devwell_ai_logo.png';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -36,7 +35,7 @@ export default function LoginPage() {
         <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-cyan-500/5 rounded-full blur-3xl" />
         <div className="relative z-10 max-w-lg px-12">
           <div className="flex items-center gap-3 mb-8">
-            <img src={brandLogo} alt="DevWell AI logo" className="h-14 w-14 rounded-2xl object-cover" />
+            <img src="/devwell_ai_logo.png" alt="DevWell AI logo" className="h-14 w-14 rounded-2xl object-cover" />
             <div>
               <h1 className="text-3xl font-bold text-white">DevWell AI</h1>
               <p className="text-sm text-slate-400">Developer Wellness Monitor</p>
@@ -66,7 +65,7 @@ export default function LoginPage() {
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="w-full max-w-sm">
           <div className="lg:hidden flex items-center gap-3 mb-10">
-            <img src={brandLogo} alt="DevWell AI logo" className="h-10 w-10 rounded-xl object-cover" />
+            <img src="/devwell_ai_logo.png" alt="DevWell AI logo" className="h-10 w-10 rounded-xl object-cover" />
             <h1 className="text-xl font-bold text-white">DevWell AI</h1>
           </div>
 

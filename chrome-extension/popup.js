@@ -309,7 +309,7 @@ class DevWellPopup {
 
   async handleLogout() {
     if (this.sessionActive) {
-      await chrome.runtime.sendMessage({ action: 'requestStopSession' });
+      await this.sendRuntimeMessage('requestStopSession');
     }
 
     if (this.guestModeActive) {
@@ -338,7 +338,7 @@ class DevWellPopup {
 
     if (!this.sessionActive) {
       // Start session - open monitor tab first
-      const response = await chrome.runtime.sendMessage({ action: 'requestStartSession' });
+      const response = await this.sendRuntimeMessage('requestStartSession');
       if (response && !response.success) {
         this.showError(response.error || 'Failed to start session');
         return;
@@ -346,7 +346,21 @@ class DevWellPopup {
       // Monitor tab will be opened by background.js
     } else {
       // End session
-      await chrome.runtime.sendMessage({ action: 'requestStopSession' });
+      await this.sendRuntimeMessage('requestStopSession');
+    }
+  }
+
+  async sendRuntimeMessage(action) {
+    try {
+      return await chrome.runtime.sendMessage({ action });
+    } catch (err) {
+      const message = err?.message || 'Failed to communicate with extension background service';
+      if (message.includes('Receiving end does not exist')) {
+        this.showError('Extension reloaded. Please close and reopen the popup.');
+      } else {
+        this.showError(message);
+      }
+      return null;
     }
   }
 
@@ -658,7 +672,7 @@ class DevWellPopup {
       
       if (!this.guestModeActive && this.sessionActive) {
         // If exiting guest mode while session is active, stop the session
-        await chrome.runtime.sendMessage({ action: 'requestStopSession' });
+        await this.sendRuntimeMessage('requestStopSession');
       }
       
       this.updateUI();

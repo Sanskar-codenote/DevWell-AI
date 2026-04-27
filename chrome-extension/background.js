@@ -309,7 +309,7 @@ class DevWellBackground {
         }
         if (this.monitorTabId) {
             try { // Focus existing tab
-                await chrome.tabs.update(this.monitorTabId, { active: true });
+                await chrome.tabs.update(this.monitorTabId, { active: true, autoDiscardable: false });
                 return { success: true };
             } catch { /* tab doesn't exist, proceed to create */ }
         }
@@ -317,6 +317,9 @@ class DevWellBackground {
         
         const tab = await chrome.tabs.create({ url: chrome.runtime.getURL(MONITOR_URL), pinned: true });
         this.monitorTabId = tab.id;
+        if (this.monitorTabId) {
+          await chrome.tabs.update(this.monitorTabId, { autoDiscardable: false }).catch(() => undefined);
+        }
         await chrome.storage.local.set({ monitorTabId: this.monitorTabId });
         return { success: true };
 

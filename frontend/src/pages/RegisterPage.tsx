@@ -3,7 +3,6 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { ArrowRight } from 'lucide-react';
 import { getErrorMessage } from '../lib/api';
-import brandLogo from '../assets/devwell_ai_logo.png';
 
 export default function RegisterPage() {
   const [email, setEmail] = useState('');
@@ -36,7 +35,7 @@ export default function RegisterPage() {
     <div className="min-h-screen bg-slate-950 flex items-center justify-center p-8">
       <div className="w-full max-w-sm">
         <div className="flex items-center gap-3 mb-10">
-          <img src={brandLogo} alt="DevWell AI logo" className="h-10 w-10 rounded-xl object-cover" />
+          <img src="/devwell_ai_logo.png" alt="DevWell AI logo" className="h-10 w-10 rounded-xl object-cover" />
           <h1 className="text-xl font-bold text-white">DevWell AI</h1>
         </div>
 

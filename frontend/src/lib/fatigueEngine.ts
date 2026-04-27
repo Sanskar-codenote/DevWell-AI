@@ -49,6 +49,12 @@ interface ImageCaptureLike {
   grabFrame: () => Promise<ImageBitmap>;
 }
 
+interface HiddenTrackReader {
+  read: () => Promise<{ done: boolean; value?: unknown }>;
+  cancel?: () => Promise<void>;
+  releaseLock?: () => void;
+}
+
 interface FaceMeshConstructor {
   new (config: { locateFile: (file: string) => string }): FaceMeshInstance;
 }
@@ -94,6 +100,11 @@ const MIN_VALID_EYE_WIDTH = 0.018;
 const UNKNOWN_FRAME_RESET_MS = 2500;
 const FATIGUE_ALERT_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const REOPEN_STABILITY_MS = 90;
+const HIDDEN_READER_TIMEOUT_MS = 280;
+const HIDDEN_GRAB_TIMEOUT_MS = 280;
+const HIDDEN_LOOP_BACKOFF_MS = 40;
+const BACKGROUND_DROWSY_MIN_CLOSED_SAMPLES = 3;
+const BACKGROUND_SPARSE_GAP_MS = 700;
 
 export class FatigueEngine {
   private faceMesh: FaceMeshInstance | null = null;
@@ -127,9 +138,13 @@ export class FatigueEngine {
   private unknownStateStartAt = 0;
   private openStateStartAt = 0;
   private lastBlinkAt = 0;
+  private closureSampleCount = 0;
+  private lastResultAt = 0;
   private processingCanvas: HTMLCanvasElement | null = null;
   private processingCtx: CanvasRenderingContext2D | null = null;
+  private cameraStream: MediaStream | null = null;
   private imageCapture: ImageCaptureLike | null = null;
+  private hiddenTrackReader: HiddenTrackReader | null = null;
 
   constructor(onUpdate: FatigueCallback, onAlert: AlertCallback) {
     this.onFatigueUpdate = onUpdate;
@@ -197,7 +212,11 @@ export class FatigueEngine {
 
     this.clearFrameLoopHandles();
 
-    if (!this.isTabVisible && this.imageCapture) {
+    if (!this.isTabVisible) {
+      this.ensureHiddenFrameProviders();
+    }
+
+    if (!this.isTabVisible) {
       if (!this.hiddenFrameLoopActive) {
         void this.runHiddenFrameLoop();
       }
@@ -208,9 +227,6 @@ export class FatigueEngine {
       this.animationFrameId = requestAnimationFrame(() => this.processFrame());
       return;
     }
-
-    // Fallback mode when ImageCapture is unavailable.
-    this.backgroundFallbackId = window.setTimeout(() => this.processFrame(), this.isTabVisible ? 50 : 500);
   }
 
   private checkBreakReminder(now: number): void {
@@ -238,6 +254,77 @@ export class FatigueEngine {
     }
   }
 
+  private createHiddenTrackReader(stream: MediaStream): HiddenTrackReader | null {
+    const track = stream.getVideoTracks()[0];
+    if (!track || typeof window === 'undefined') return null;
+
+    const ProcessorCtor = (window as unknown as {
+      MediaStreamTrackProcessor?: new (config: { track: MediaStreamTrack }) => {
+        readable: { getReader: () => HiddenTrackReader };
+      };
+    }).MediaStreamTrackProcessor;
+
+    if (!ProcessorCtor) return null;
+
+    try {
+      const processor = new ProcessorCtor({ track });
+      return processor.readable.getReader();
+    } catch (err) {
+      console.warn('[DevWell] MediaStreamTrackProcessor unavailable for this track:', err);
+      return null;
+    }
+  }
+
+  private closeHiddenTrackReader(): void {
+    const reader = this.hiddenTrackReader;
+    this.hiddenTrackReader = null;
+    if (!reader) return;
+    if (reader.cancel) {
+      void reader.cancel().catch(() => undefined);
+    }
+    reader.releaseLock?.();
+  }
+
+  private ensureHiddenFrameProviders(): void {
+    if (!this.cameraStream) return;
+    if (!this.hiddenTrackReader) {
+      this.hiddenTrackReader = this.createHiddenTrackReader(this.cameraStream);
+    }
+    if (!this.imageCapture) {
+      this.imageCapture = this.createImageCapture(this.cameraStream);
+    }
+  }
+
+  private async detectFromHiddenTrackReader(): Promise<boolean> {
+    if (!this.hiddenTrackReader || !this.processingCtx || !this.processingCanvas) return false;
+
+    try {
+      const frame = await Promise.race([
+        this.hiddenTrackReader.read(),
+        new Promise<{ done: true }>((resolve) =>
+          window.setTimeout(() => resolve({ done: true }), HIDDEN_READER_TIMEOUT_MS)
+        ),
+      ]);
+      if (frame.done || !frame.value) {
+        this.closeHiddenTrackReader();
+        return false;
+      }
+
+      const videoFrame = frame.value as CanvasImageSource & { close?: () => void };
+      try {
+        this.processingCtx.drawImage(videoFrame, 0, 0, this.processingCanvas.width, this.processingCanvas.height);
+        await this.sendFrameForDetection(this.processingCanvas);
+      } finally {
+        videoFrame.close?.();
+      }
+      return true;
+    } catch (err) {
+      console.warn('[DevWell] Hidden track reader failed, switching source:', err);
+      this.closeHiddenTrackReader();
+      return false;
+    }
+  }
+
   private async sendFrameForDetection(image: CanvasImageSource): Promise<void> {
     if (!this.faceMesh) return;
     await this.faceMesh.send({ image });
@@ -247,8 +334,7 @@ export class FatigueEngine {
     if (
       this.hiddenFrameLoopActive ||
       !this.running ||
-      this.isTabVisible ||
-      !this.imageCapture
+      this.isTabVisible
     ) {
       return;
     }
@@ -256,32 +342,61 @@ export class FatigueEngine {
     this.hiddenFrameLoopActive = true;
 
     try {
-      while (this.running && !this.isTabVisible && this.imageCapture) {
-        try {
-          const bitmap = await this.imageCapture.grabFrame();
+      while (this.running && !this.isTabVisible) {
+        this.ensureHiddenFrameProviders();
+
+        let detected = false;
+
+        if (this.hiddenTrackReader) {
+          detected = await this.detectFromHiddenTrackReader();
+        }
+
+        if (!detected && this.imageCapture) {
           try {
-            if (this.processingCtx && this.processingCanvas) {
-              this.processingCtx.drawImage(bitmap, 0, 0, this.processingCanvas.width, this.processingCanvas.height);
-              await this.sendFrameForDetection(this.processingCanvas);
-            } else {
-              await this.sendFrameForDetection(bitmap);
+            const bitmap = await Promise.race([
+              this.imageCapture.grabFrame(),
+              new Promise<null>((resolve) =>
+                window.setTimeout(() => resolve(null), HIDDEN_GRAB_TIMEOUT_MS)
+              ),
+            ]);
+            if (!bitmap) {
+              this.imageCapture = null;
+              continue;
             }
-          } finally {
-            bitmap.close();
+            try {
+              if (this.processingCtx && this.processingCanvas) {
+                this.processingCtx.drawImage(bitmap, 0, 0, this.processingCanvas.width, this.processingCanvas.height);
+                await this.sendFrameForDetection(this.processingCanvas);
+              } else {
+                await this.sendFrameForDetection(bitmap);
+              }
+              detected = true;
+            } finally {
+              bitmap.close();
+            }
+          } catch (error) {
+            console.warn('[DevWell] Hidden ImageCapture failed, switching source:', error);
+            this.imageCapture = null;
           }
-        } catch (error) {
-          console.warn('[DevWell] Hidden frame capture failed, switching to timer fallback:', error);
-          this.imageCapture = null;
-          break;
+        }
+
+        if (!detected && this.videoElement?.readyState && this.videoElement.readyState >= 2) {
+          if (this.processingCtx && this.processingCanvas) {
+            this.processingCtx.drawImage(this.videoElement, 0, 0, this.processingCanvas.width, this.processingCanvas.height);
+            await this.sendFrameForDetection(this.processingCanvas);
+          } else {
+            await this.sendFrameForDetection(this.videoElement);
+          }
         }
 
         this.checkBreakReminder(Date.now());
-        // Stricter background throttle: ~2 FPS to save battery
-        await new Promise(resolve => setTimeout(resolve, 500));
+        if (!detected) {
+          await new Promise(resolve => setTimeout(resolve, HIDDEN_LOOP_BACKOFF_MS));
+        }
       }
     } finally {
       this.hiddenFrameLoopActive = false;
-      if (this.running) {
+      if (this.running && this.isTabVisible) {
         this.scheduleNextFrame();
       }
     }
@@ -331,8 +446,12 @@ export class FatigueEngine {
       this.unknownStateStartAt = 0;
       this.openStateStartAt = 0;
       this.lastBlinkAt = 0;
+      this.lastResultAt = 0;
+      this.closureSampleCount = 0;
       this.lastFatigueAlertAt = 0;
       this.hiddenFrameLoopActive = false;
+      this.closeHiddenTrackReader();
+      this.cameraStream = null;
       this.imageCapture = null;
       // Load FaceMesh via CDN
       const FaceMesh = window.FaceMesh;
@@ -383,7 +502,9 @@ export class FatigueEngine {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: 640, height: 480, facingMode: 'user' },
       });
+      this.cameraStream = stream;
       videoElement.srcObject = stream;
+      this.hiddenTrackReader = this.createHiddenTrackReader(stream);
       this.imageCapture = this.createImageCapture(stream);
       
       await videoElement.play();
@@ -412,16 +533,14 @@ export class FatigueEngine {
   }
 
   private async processFrame(): Promise<void> {
-    if (!this.running || !this.videoElement || !this.faceMesh) return;
+    if (!this.running || !this.faceMesh) return;
 
-    if (!this.isTabVisible && this.imageCapture) {
-      if (!this.hiddenFrameLoopActive) {
-        void this.runHiddenFrameLoop();
-      }
+    if (!this.isTabVisible) {
+      this.scheduleNextFrame();
       return;
     }
 
-    if (this.videoElement.readyState >= 2) {
+    if (this.videoElement && this.videoElement.readyState >= 2) {
       if (this.processingCtx && this.processingCanvas) {
         this.processingCtx.drawImage(this.videoElement, 0, 0, this.processingCanvas.width, this.processingCanvas.height);
         await this.sendFrameForDetection(this.processingCanvas);
@@ -467,6 +586,9 @@ export class FatigueEngine {
     this.unknownStateStartAt = 0;
 
     const now = Date.now();
+    const frameGap = this.lastResultAt > 0 ? now - this.lastResultAt : 0;
+    this.lastResultAt = now;
+    const isBackground = !this.isTabVisible;
     const eyesCurrentlyClosed =
       avgEAR < this.earThreshold &&
       Math.max(leftEAR, rightEAR) < this.earThreshold * 1.08;
@@ -482,9 +604,11 @@ export class FatigueEngine {
         // Eyes just closed
         this.eyesClosed = true;
         this.eyeClosedStart = now;
+        this.closureSampleCount = 1;
         this.drowsinessCountedForCurrentClosure = false;
         this.minEARDuringClosure = avgEAR;
       } else {
+        this.closureSampleCount += 1;
         this.minEARDuringClosure = Math.min(this.minEARDuringClosure, avgEAR);
       }
 
@@ -492,6 +616,7 @@ export class FatigueEngine {
       const closedDuration = now - this.eyeClosedStart;
       if (
         closedDuration >= DROWSINESS_THRESHOLD_MS &&
+        (!isBackground || this.closureSampleCount >= BACKGROUND_DROWSY_MIN_CLOSED_SAMPLES) &&
         !this.drowsinessCountedForCurrentClosure
       ) {
         this.longClosureEvents++;
@@ -507,7 +632,7 @@ export class FatigueEngine {
 
         // Wait for reopen stability before classifying the closure event
         const timeSinceOpen = now - this.openStateStartAt;
-        if (timeSinceOpen < REOPEN_STABILITY_MS) {
+        if (timeSinceOpen < REOPEN_STABILITY_MS && !isBackground) {
           // Still waiting for stability, just emit state and continue tracking
           this.emitState();
           return;
@@ -518,7 +643,22 @@ export class FatigueEngine {
         const closureDuration = now - this.eyeClosedStart;
         console.log(`[Blink] Classifying closure: ${closureDuration}ms (threshold: ${BLINK_MIN_MS}-${DROWSINESS_THRESHOLD_MS}ms)`);
 
-        if (closureDuration >= DROWSINESS_THRESHOLD_MS) {
+        const sparseBackgroundClosure =
+          isBackground &&
+          closureDuration >= DROWSINESS_THRESHOLD_MS &&
+          this.closureSampleCount <= 2 &&
+          frameGap >= BACKGROUND_SPARSE_GAP_MS;
+
+        if (sparseBackgroundClosure) {
+          if (now - this.lastBlinkAt >= BLINK_REFRACTORY_MS) {
+            this.blinkCount++;
+            this.blinkHistory.push(now);
+            this.lastBlinkAt = now;
+            console.log(
+              `[Blink] ✓ Background sparse closure treated as blink. Count: ${this.blinkCount}, Duration: ${closureDuration}ms`
+            );
+          }
+        } else if (closureDuration >= DROWSINESS_THRESHOLD_MS) {
           // Long closures are drowsiness events and must never be counted as blinks.
           if (!this.drowsinessCountedForCurrentClosure) {
             this.longClosureEvents++;
@@ -596,6 +736,7 @@ export class FatigueEngine {
   private resetClosureTracking(): void {
     this.eyesClosed = false;
     this.eyeClosedStart = 0;
+    this.closureSampleCount = 0;
     this.drowsinessCountedForCurrentClosure = false;
     this.minEARDuringClosure = 1;
     this.openStateStartAt = 0;
@@ -609,6 +750,13 @@ export class FatigueEngine {
     }
 
     const closedDuration = now - this.eyeClosedStart;
+    if (
+      !this.isTabVisible &&
+      now - this.unknownStateStartAt < UNKNOWN_FRAME_RESET_MS
+    ) {
+      return;
+    }
+
     if (
       closedDuration >= DROWSINESS_THRESHOLD_MS &&
       !this.drowsinessCountedForCurrentClosure
@@ -674,6 +822,7 @@ export class FatigueEngine {
     this.running = false;
     this.clearFrameLoopHandles();
     this.hiddenFrameLoopActive = false;
+    this.closeHiddenTrackReader();
     this.imageCapture = null;
     if (this.heartbeatIntervalId) {
       clearInterval(this.heartbeatIntervalId);
@@ -684,8 +833,14 @@ export class FatigueEngine {
     this.releaseWakeLock();
 
     // Stop camera
-    if (this.videoElement?.srcObject) {
+    if (this.cameraStream) {
+      this.cameraStream.getTracks().forEach(t => t.stop());
+      this.cameraStream = null;
+    } else if (this.videoElement?.srcObject) {
       (this.videoElement.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+      this.videoElement.srcObject = null;
+    }
+    if (this.videoElement) {
       this.videoElement.srcObject = null;
     }
 

@@ -1,7 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { LayoutDashboard, BarChart3, LogOut, Settings } from 'lucide-react';
-import brandLogo from '../assets/devwell_ai_logo.png';
 
 export default function Sidebar() {
   const { user, logout } = useAuth();
@@ -22,7 +21,7 @@ export default function Sidebar() {
   return (
     <aside className="w-64 border-r border-white/5 bg-slate-950 flex flex-col p-4">
       <div className="flex items-center gap-3 px-4 py-5 mb-6">
-        <img src={brandLogo} alt="DevWell AI logo" className="h-10 w-10 rounded-xl object-cover" />
+        <img src="/devwell_ai_logo.png" alt="DevWell AI logo" className="h-10 w-10 rounded-xl object-cover" />
         <div>
           <h1 className="text-lg font-bold text-white tracking-tight">DevWell</h1>
           <p className="text-[11px] text-slate-500 font-medium tracking-wider uppercase">AI Wellness</p>

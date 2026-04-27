@@ -7,6 +7,9 @@ const BLINK_MIN_MS = 50;
 const DROWSINESS_THRESHOLD_MS = 1500;
 const BLINK_REFRACTORY_MS = 80;
 const REOPEN_STABILITY_MS = 90;
+const HIDDEN_READER_TIMEOUT_MS = 280;
+const HIDDEN_GRAB_TIMEOUT_MS = 280;
+const HIDDEN_LOOP_BACKOFF_MS = 40;
 
 let sessionActive = false;
 let sessionStartTime = null;
@@ -17,12 +20,14 @@ let lastBlinkTime = 0;
 let eyesClosed = false;
 let eyeClosedStart = 0;
 let cameraStream = null;
+let cameraTrack = null;
 let videoElement = document.getElementById('webcam'); // Get from DOM
 let faceLandmarker = null;
 let updateInterval = null;
 let rafId = null;
 let backgroundTimeoutId = null;
 let imageCapture = null;
+let hiddenFrameReader = null;
 let hiddenFrameLoopActive = false;
 let isTabVisible = true;
 const processingCanvas = document.createElement('canvas');
@@ -44,9 +49,13 @@ document.addEventListener('visibilitychange', () => {
     return;
   }
 
-  if (!isTabVisible && imageCapture && !hiddenFrameLoopActive) {
+  if (!isTabVisible) {
+    ensureHiddenCaptureProviders();
+  }
+
+  if (!isTabVisible) {
     clearFrameLoopHandles();
-    void runHiddenFrameLoop();
+    scheduleNextFrame();
   }
 });
 
@@ -130,54 +139,134 @@ function clearFrameLoopHandles() {
   }
 }
 
+function createHiddenTrackReader(track) {
+  if (!track || typeof MediaStreamTrackProcessor === 'undefined') return null;
+  try {
+    const processor = new MediaStreamTrackProcessor({ track });
+    return processor.readable.getReader();
+  } catch (err) {
+    console.warn('[DevWell Monitor] MediaStreamTrackProcessor unavailable for this track.', err);
+    return null;
+  }
+}
+
+function closeHiddenTrackReader() {
+  const reader = hiddenFrameReader;
+  hiddenFrameReader = null;
+  if (!reader) return;
+  reader.cancel?.().catch(() => undefined);
+  reader.releaseLock?.();
+}
+
+function ensureHiddenCaptureProviders() {
+  if (!cameraTrack) return;
+  if (!hiddenFrameReader) {
+    hiddenFrameReader = createHiddenTrackReader(cameraTrack);
+  }
+  if (!imageCapture && typeof ImageCapture !== 'undefined') {
+    try {
+      imageCapture = new ImageCapture(cameraTrack);
+    } catch (err) {
+      console.warn('[DevWell Monitor] ImageCapture unavailable for this track.', err);
+      imageCapture = null;
+    }
+  }
+}
+
 function scheduleNextFrame() {
   if (!sessionActive) return;
 
   clearFrameLoopHandles();
 
-  if (isTabVisible) {
-    rafId = requestAnimationFrame(processFrame);
-    return;
-  }
-
-  if (imageCapture) {
+  if (!isTabVisible) {
+    ensureHiddenCaptureProviders();
     if (!hiddenFrameLoopActive) {
       void runHiddenFrameLoop();
     }
     return;
   }
 
-  backgroundTimeoutId = setTimeout(processFrame, isTabVisible ? 50 : 500);
+  if (isTabVisible) {
+    rafId = requestAnimationFrame(processFrame);
+    return;
+  }
 }
 
 async function runHiddenFrameLoop() {
-  if (hiddenFrameLoopActive || !sessionActive || isTabVisible || !imageCapture) return;
+  if (hiddenFrameLoopActive || !sessionActive || isTabVisible) return;
   hiddenFrameLoopActive = true;
 
   try {
-    while (sessionActive && !isTabVisible && imageCapture) {
-      try {
-        const bitmap = await imageCapture.grabFrame();
+    while (sessionActive && !isTabVisible) {
+      ensureHiddenCaptureProviders();
+      let detected = false;
+
+      if (hiddenFrameReader) {
         try {
-          processingCtx.drawImage(bitmap, 0, 0, processingCanvas.width, processingCanvas.height);
-          const now = performance.now();
-          const results = faceLandmarker.detectForVideo(processingCanvas, now);
-          onFaceLandmarkerResults(results);
-        } finally {
-          bitmap.close();
+          const frame = await Promise.race([
+            hiddenFrameReader.read(),
+            new Promise((resolve) => setTimeout(() => resolve({ done: true }), HIDDEN_READER_TIMEOUT_MS)),
+          ]);
+          if (frame.done || !frame.value) {
+            closeHiddenTrackReader();
+          } else {
+            const videoFrame = frame.value;
+            try {
+              processingCtx.drawImage(videoFrame, 0, 0, processingCanvas.width, processingCanvas.height);
+              const now = performance.now();
+              const results = faceLandmarker.detectForVideo(processingCanvas, now);
+              onFaceLandmarkerResults(results);
+              detected = true;
+            } finally {
+              videoFrame.close?.();
+            }
+          }
+        } catch (err) {
+          console.warn('[DevWell Monitor] Hidden track reader failed, switching source.', err);
+          closeHiddenTrackReader();
         }
-      } catch (err) {
-        console.warn('[DevWell Monitor] Hidden frame capture failed, falling back to timer mode.', err);
-        imageCapture = null;
-        break;
       }
 
-      // Stricter background throttle: ~2 FPS to save battery
-      await new Promise(resolve => setTimeout(resolve, 500));
+      if (!detected && imageCapture) {
+        try {
+          const bitmap = await Promise.race([
+            imageCapture.grabFrame(),
+            new Promise((resolve) => setTimeout(() => resolve(null), HIDDEN_GRAB_TIMEOUT_MS)),
+          ]);
+          if (!bitmap) {
+            imageCapture = null;
+            continue;
+          }
+          try {
+            processingCtx.drawImage(bitmap, 0, 0, processingCanvas.width, processingCanvas.height);
+            const now = performance.now();
+            const results = faceLandmarker.detectForVideo(processingCanvas, now);
+            onFaceLandmarkerResults(results);
+            detected = true;
+          } finally {
+            bitmap.close();
+          }
+        } catch (err) {
+          console.warn('[DevWell Monitor] Hidden ImageCapture failed, switching source.', err);
+          imageCapture = null;
+        }
+      }
+
+      if (!detected && videoElement.readyState >= 2) {
+        processingCtx.drawImage(videoElement, 0, 0, processingCanvas.width, processingCanvas.height);
+        const now = performance.now();
+        const results = faceLandmarker.detectForVideo(processingCanvas, now);
+        onFaceLandmarkerResults(results);
+        detected = true;
+      }
+
+      if (!detected) {
+        await new Promise(resolve => setTimeout(resolve, HIDDEN_LOOP_BACKOFF_MS));
+      }
     }
   } finally {
     hiddenFrameLoopActive = false;
-    if (sessionActive) {
+    if (sessionActive && isTabVisible) {
       scheduleNextFrame();
     }
   }
@@ -193,7 +282,8 @@ async function startSession() {
       faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
         baseOptions: {
           modelAssetPath: chrome.runtime.getURL('lib/face_landmarker.task'),
-          delegate: 'GPU' // Use GPU in a visible tab for better performance
+          // CPU delegate is more stable in hidden/minimized tab scenarios.
+          delegate: 'CPU'
         },
         runningMode: 'VIDEO',
         numFaces: 1
@@ -219,15 +309,14 @@ async function startSession() {
     });
     videoElement.srcObject = cameraStream;
 
+    cameraTrack = cameraStream.getVideoTracks()[0] || null;
     imageCapture = null;
-    const track = cameraStream.getVideoTracks()[0];
-    if (track && typeof ImageCapture !== 'undefined') {
-      try {
-        imageCapture = new ImageCapture(track);
-        console.log('[DevWell Monitor] ImageCapture enabled for hidden-tab frame processing.');
-      } catch (err) {
-        console.warn('[DevWell Monitor] ImageCapture unavailable for this track.', err);
-      }
+    closeHiddenTrackReader();
+    ensureHiddenCaptureProviders();
+    if (hiddenFrameReader) {
+      console.log('[DevWell Monitor] MediaStreamTrackProcessor enabled for hidden-tab frame processing.');
+    } else if (imageCapture) {
+      console.log('[DevWell Monitor] ImageCapture enabled for hidden-tab frame processing.');
     }
 
     videoElement.onloadedmetadata = () => {
@@ -309,10 +398,8 @@ let lastVideoTime = -1;
 async function processFrame() {
   if (!sessionActive) return;
 
-  if (!isTabVisible && imageCapture) {
-    if (!hiddenFrameLoopActive) {
-      void runHiddenFrameLoop();
-    }
+  if (!isTabVisible) {
+    scheduleNextFrame();
     return;
   }
 
@@ -320,9 +407,8 @@ async function processFrame() {
   
   // Ensure we have a video element and it's ready
   if (videoElement.readyState >= 2) {
-    // When visible, we target ~30fps (33ms). 
-    // When hidden, we target ~2fps (500ms) to catch blinks while being battery friendly.
-    const minDelay = isTabVisible ? 33 : 500;
+    // When visible, we target ~30fps (33ms).
+    const minDelay = 33;
     
     if (now - lastVideoTime >= minDelay) {
       lastVideoTime = now;
@@ -349,7 +435,9 @@ function stopSession() {
   sessionActive = false;
 
   clearFrameLoopHandles();
+  closeHiddenTrackReader();
   imageCapture = null;
+  cameraTrack = null;
   hiddenFrameLoopActive = false;
   if (updateInterval) clearInterval(updateInterval);
 
