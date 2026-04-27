@@ -154,6 +154,13 @@ body {
   gap: 8px;
 }
 
+.logo-image {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
 .logo h1 {
   font-size: 18px;
   font-weight: 600;
