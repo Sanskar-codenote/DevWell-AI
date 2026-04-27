@@ -3,7 +3,6 @@ import { useAuth } from '../context/AuthContext';
 import { Settings, Save, AlertCircle } from 'lucide-react';
 
 export interface SettingsData {
-  blinkThreshold: number;
   lowFatigueThreshold: number;
   highFatigueThreshold: number;
   enable20MinNotification: boolean;
@@ -31,7 +30,6 @@ declare global {
 
 export default function SettingsPage() {
   const { user } = useAuth();
-  const [blinkThreshold, setBlinkThreshold] = useState<number>(15);
   const [lowFatigueThreshold, setLowFatigueThreshold] = useState<number>(50);
   const [highFatigueThreshold, setHighFatigueThreshold] = useState<number>(80);
   const [enable20MinNotification, setEnable20MinNotification] = useState<boolean>(true);
@@ -47,7 +45,6 @@ export default function SettingsPage() {
         const savedSettings = localStorage.getItem('userSettings');
         if (savedSettings) {
           const settings = JSON.parse(savedSettings);
-          setBlinkThreshold(settings.blinkThreshold || 15);
           setLowFatigueThreshold(settings.lowFatigueThreshold || 50);
           setHighFatigueThreshold(settings.highFatigueThreshold || 80);
           setEnable20MinNotification(settings.enable20MinNotification !== false);
@@ -57,8 +54,8 @@ export default function SettingsPage() {
         // const response = await fetch('/api/v1/settings');
         // const data = await response.json();
         // if (response.ok) {
-        //   setBlinkThreshold(data.blinkThreshold || 15);
-        //   setFatigueNotificationThreshold(data.fatigueNotificationThreshold || 70);
+        //   setLowFatigueThreshold(data.lowFatigueThreshold || 50);
+        //   setHighFatigueThreshold(data.highFatigueThreshold || 80);
         //   setEnable20MinNotification(data.enable20MinNotification !== false);
         // }
       } catch (err) {
@@ -77,7 +74,6 @@ export default function SettingsPage() {
     try {
       const settings = {
         userId: user?.id,
-        blinkThreshold,
         lowFatigueThreshold,
         highFatigueThreshold,
         enable20MinNotification,
@@ -138,7 +134,6 @@ export default function SettingsPage() {
     const handleWindowMessage = (event: MessageEvent) => {
       // Only accept messages from our origin and with the expected type
       if (event.data?.type === 'DEVWELL_SETTINGS_SYNC') {
-        setBlinkThreshold(event.data.settings.blinkThreshold);
         setLowFatigueThreshold(event.data.settings.lowFatigueThreshold);
         setHighFatigueThreshold(event.data.settings.highFatigueThreshold);
         setEnable20MinNotification(event.data.settings.enable20MinNotification);
@@ -167,28 +162,6 @@ export default function SettingsPage() {
 
         <div className="bg-slate-900/50 rounded-xl p-6 border border-white/5">
           <div className="space-y-6">
-            {/* Blink Rate Setting with Slider */}
-            <div>
-              <label htmlFor="blinkThreshold" className="block text-sm font-medium text-slate-300 mb-2">
-                Normal Blink Rate (per minute)
-              </label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="range"
-                  id="blinkThreshold"
-                  min="5"
-                  max="30"
-                  value={blinkThreshold}
-                  onChange={(e) => setBlinkThreshold(Number(e.target.value))}
-                  className="flex-1"
-                />
-                <span className="text-lg font-medium text-white w-12 text-center">{blinkThreshold}</span>
-              </div>
-              <p className="text-xs text-slate-500 mt-1">
-                Set your normal blink rate threshold. Values below this may indicate fatigue.
-              </p>
-            </div>
-
             {/* Low Fatigue Notification Threshold */}
             <div>
               <label htmlFor="lowFatigueThreshold" className="block text-sm font-medium text-slate-300 mb-2">

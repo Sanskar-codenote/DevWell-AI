@@ -69,11 +69,9 @@ class DevWellPopup {
     this.elements.settingsSection = document.getElementById('settingsSection');
     this.elements.saveSettingsBtn = document.getElementById('saveSettingsBtn');
     this.elements.cancelSettingsBtn = document.getElementById('cancelSettingsBtn');
-    this.elements.blinkThresholdInput = document.getElementById('blinkThreshold');
     this.elements.lowFatigueThresholdInput = document.getElementById('lowFatigueThreshold');
     this.elements.highFatigueThresholdInput = document.getElementById('highFatigueThreshold');
     this.elements.enable20MinNotificationInput = document.getElementById('enable20MinNotification');
-    this.elements.blinkValueDisplay = document.getElementById('blinkValue');
     this.elements.lowFatigueValueDisplay = document.getElementById('lowFatigueValue');
     this.elements.highFatigueValueDisplay = document.getElementById('highFatigueValue');
     
@@ -139,10 +137,6 @@ class DevWellPopup {
     });
 
     // Slider event listeners
-    this.elements.blinkThresholdInput?.addEventListener('input', () => {
-      this.updateSliderDisplay();
-    });
-
     this.elements.lowFatigueThresholdInput?.addEventListener('input', () => {
       this.updateSliderDisplay();
     });
@@ -234,7 +228,6 @@ class DevWellPopup {
     
     // Load settings
     this.settings = result.extensionSettings || {
-      blinkThreshold: 15,
       lowFatigueThreshold: 50,
       highFatigueThreshold: 80,
       enable20MinNotification: true,
@@ -555,9 +548,6 @@ class DevWellPopup {
 
   loadSettingsToForm() {
     if (this.settings) {
-      if (this.elements.blinkThresholdInput) {
-        this.elements.blinkThresholdInput.value = String(this.settings.blinkThreshold);
-      }
       if (this.elements.lowFatigueThresholdInput) {
         this.elements.lowFatigueThresholdInput.value = String(this.settings.lowFatigueThreshold);
       }
@@ -572,14 +562,12 @@ class DevWellPopup {
   }
 
   updateSliderDisplay() {
-    this.elements.blinkValueDisplay.textContent = this.elements.blinkThresholdInput.value;
     this.elements.lowFatigueValueDisplay.textContent = this.elements.lowFatigueThresholdInput.value;
     this.elements.highFatigueValueDisplay.textContent = this.elements.highFatigueThresholdInput.value;
   }
 
   async saveSettings() {
     const newSettings = {
-      blinkThreshold: Number(this.elements.blinkThresholdInput.value),
       lowFatigueThreshold: Number(this.elements.lowFatigueThresholdInput.value),
       highFatigueThreshold: Number(this.elements.highFatigueThresholdInput.value),
       enable20MinNotification: this.elements.enable20MinNotificationInput.checked,
