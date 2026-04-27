@@ -148,6 +148,7 @@ High-fatigue alert includes optional sound cue and browser notification (if gran
 - `POST /api/v1/sessions` (auth required)
   - Body: `session_date`, `duration_minutes`, `avg_blink_rate`, `fatigue_score`, `long_closure_events`
 - `GET /api/v1/sessions?limit=&offset=` (auth required)
+  - Analytics page uses paginated session history controls (Previous/Next).
 
 ## Analytics
 - `GET /api/v1/analytics/weekly` (auth required)

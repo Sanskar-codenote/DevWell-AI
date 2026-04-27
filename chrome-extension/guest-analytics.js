@@ -2,19 +2,33 @@ let currentPeriod = 'weekly';
 let allSessions = [];
 
 document.addEventListener('DOMContentLoaded', async () => {
+  setupTabButtons();
+  await refreshAnalyticsView();
+
+  document.getElementById('clearSessionsButton').addEventListener('click', async () => {
+    const confirmed = window.confirm('Delete all guest sessions? This cannot be undone.');
+    if (!confirmed) return;
+
+    try {
+      await chrome.storage.local.remove('guestSessions');
+      await refreshAnalyticsView();
+    } catch (err) {
+      console.error('Failed to clear guest sessions:', err);
+    }
+  });
+});
+
+async function refreshAnalyticsView() {
   // Load sessions from chrome storage
   try {
     const result = await chrome.storage.local.get('guestSessions');
     allSessions = result.guestSessions || [];
-    
+
     console.log('Loaded guest sessions:', allSessions.length);
-    
+
     // Update stats grid with all sessions
     updateStatsGrid(allSessions);
-    
-    // Set up tab buttons
-    setupTabButtons();
-    
+
     if (allSessions.length > 0) {
       try {
         renderCharts(allSessions, currentPeriod);
@@ -28,19 +42,18 @@ document.addEventListener('DOMContentLoaded', async () => {
           </div>
         `;
       }
-      
+
       renderInsights(allSessions);
       document.getElementById('insightsSection').style.display = 'block';
+    } else {
+      renderCharts([], currentPeriod);
+      document.getElementById('insightsSection').style.display = 'none';
+      document.getElementById('insightsGrid').innerHTML = '';
     }
   } catch (err) {
     console.error('Error loading guest sessions:', err);
   }
-  
-  // Set up event listeners
-  document.getElementById('backButton').addEventListener('click', () => {
-    window.close();
-  });
-});
+}
 
 function setupTabButtons() {
   const tabButtons = document.querySelectorAll('.tab-button');
@@ -56,9 +69,7 @@ function setupTabButtons() {
       currentPeriod = button.getAttribute('data-period');
       
       // Re-render charts with new period
-      if (allSessions.length > 0) {
-        renderCharts(allSessions, currentPeriod);
-      }
+      renderCharts(allSessions, currentPeriod);
     });
   });
 }

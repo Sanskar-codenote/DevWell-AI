@@ -36,6 +36,7 @@ interface SessionRecord {
 }
 
 const burnoutColors = { LOW: 'emerald', MEDIUM: 'amber', HIGH: 'red' } as const;
+const SESSIONS_PER_PAGE = 10;
 
 interface ChartTooltipEntry {
   color?: string;
@@ -68,20 +69,21 @@ export default function AnalyticsPage() {
   const [weekly, setWeekly] = useState<WeeklyData | null>(null);
   const [monthly, setMonthly] = useState<MonthlyData | null>(null);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
+  const [sessionPage, setSessionPage] = useState(0);
+  const [hasMoreSessions, setHasMoreSessions] = useState(false);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
       setLoading(true);
       try {
-        const [w, m, s] = await Promise.all([
+        const [w, m] = await Promise.all([
           api.get('/analytics/weekly'),
           api.get('/analytics/monthly'),
-          api.get('/sessions?limit=50'),
         ]);
         setWeekly(w.data);
         setMonthly(m.data);
-        setSessions(s.data.sessions);
       } catch (err) {
         console.error('Failed to load analytics', err);
       } finally {
@@ -90,6 +92,27 @@ export default function AnalyticsPage() {
     }
     load();
   }, []);
+
+  useEffect(() => {
+    async function loadSessionsPage() {
+      if (loading) return;
+
+      setSessionsLoading(true);
+      try {
+        const offset = sessionPage * SESSIONS_PER_PAGE;
+        const res = await api.get(`/sessions?limit=${SESSIONS_PER_PAGE + 1}&offset=${offset}`);
+        const rows = Array.isArray(res.data.sessions) ? res.data.sessions : [];
+        setSessions(rows.slice(0, SESSIONS_PER_PAGE));
+        setHasMoreSessions(rows.length > SESSIONS_PER_PAGE);
+      } catch (err) {
+        console.error('Failed to load session history page', err);
+      } finally {
+        setSessionsLoading(false);
+      }
+    }
+
+    void loadSessionsPage();
+  }, [loading, sessionPage]);
 
   if (loading) {
     return (
@@ -316,6 +339,13 @@ export default function AnalyticsPage() {
               </tr>
             </thead>
             <tbody>
+              {sessionsLoading && (
+                <tr>
+                  <td colSpan={5} className="text-center py-8 text-sm text-slate-500">
+                    Loading sessions...
+                  </td>
+                </tr>
+              )}
               {sessions.map((s) => (
                 <tr key={s.id} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
                   <td className="py-3 px-3 text-sm text-white">{formatDate(s.session_date)}</td>
@@ -333,7 +363,7 @@ export default function AnalyticsPage() {
                   <td className="py-3 px-3 text-sm text-slate-300">{s.long_closure_events}</td>
                 </tr>
               ))}
-              {sessions.length === 0 && (
+              {!sessionsLoading && sessions.length === 0 && (
                 <tr>
                   <td colSpan={5} className="text-center py-8 text-sm text-slate-500">
                     No sessions recorded yet. Start a session from the Dashboard!
@@ -342,6 +372,27 @@ export default function AnalyticsPage() {
               )}
             </tbody>
           </table>
+        </div>
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <p className="text-xs text-slate-500">
+            Page {sessionPage + 1}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSessionPage((p) => Math.max(0, p - 1))}
+              disabled={sessionsLoading || sessionPage === 0}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium border border-white/10 text-slate-300 hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Previous
+            </button>
+            <button
+              onClick={() => setSessionPage((p) => p + 1)}
+              disabled={sessionsLoading || !hasMoreSessions}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium border border-white/10 text-slate-300 hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Next
+            </button>
+          </div>
         </div>
       </div>
     </div>

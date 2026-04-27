@@ -68,6 +68,7 @@ Notes:
 In Guest Mode popup UI:
 - Session controls remain available (start/end).
 - "View Analytics" opens `guest-analytics.html`.
+- Exiting guest mode clears extension recent alerts.
 
 ## 6. Guest Analytics Page
 
@@ -81,6 +82,7 @@ In Guest Mode popup UI:
   - Fatigue Score trend (line)
   - Session Duration trend (bar)
 - Additional summary/insight cards are computed client-side.
+- Header includes `Clear All Sessions` to remove `guestSessions` from local storage.
 
 ## 7. Security & Privacy
 

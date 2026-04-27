@@ -89,6 +89,7 @@ Current behavior:
 - Popup renders latest alerts in reverse chronological order.
 - User can dismiss each alert via `×`.
 - Alerts are cleared on extension logout.
+- Alerts are also cleared when exiting Guest Mode.
 
 Alert types include:
 - `fatigue_moderate`, `fatigue_high`, `break`

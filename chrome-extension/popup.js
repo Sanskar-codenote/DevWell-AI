@@ -287,6 +287,8 @@ class DevWellPopup {
 
     if (this.guestModeActive) {
       await this.toggleGuestMode();
+      await chrome.storage.local.set({ alerts: [] });
+      this.alerts = [];
       return;
     }
 
@@ -638,6 +640,7 @@ class DevWellPopup {
   // Guest Mode Methods
   async toggleGuestMode() {
     console.log('toggleGuestMode called, current state:', this.guestModeActive);
+    const exitingGuestMode = this.guestModeActive;
     this.guestModeActive = !this.guestModeActive;
     console.log('guestModeActive set to:', this.guestModeActive);
     
@@ -647,6 +650,11 @@ class DevWellPopup {
       if (!this.guestModeActive && this.sessionActive) {
         // If exiting guest mode while session is active, stop the session
         await this.sendRuntimeMessage('requestStopSession');
+      }
+
+      if (exitingGuestMode) {
+        await chrome.storage.local.set({ alerts: [] });
+        this.alerts = [];
       }
       
       this.updateUI();

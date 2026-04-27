@@ -47,23 +47,6 @@
       font-weight: 600;
     }
 
-    .back-button {
-      background: none;
-      border: none;
-      color: var(--text-primary);
-      font-size: 16px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      padding: 8px 12px;
-      border-radius: 6px;
-    }
-
-    .back-button:hover {
-      background: rgba(255, 255, 255, 0.1);
-    }
-
     /* Time Period Tabs - Matching Main Analytics Page */
     .time-period-tabs {
       display: flex;
@@ -242,14 +225,22 @@
     .btn-primary:hover {
       background-color: #059669;
     }
+
+    .btn-danger {
+      background-color: var(--danger);
+      color: white;
+    }
+
+    .btn-danger:hover {
+      background-color: #dc2626;
+    }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="header">
-      <button id="backButton" class="back-button">← Back to Extension</button>
       <h1>👤 Guest Analytics - Local Data</h1>
-      <div style="width: 24px;"></div>
+      <button id="clearSessionsButton" class="btn btn-danger">Clear All Sessions</button>
     </div>
 
     <!-- Time Period Tabs - Matching Main Analytics Page -->
