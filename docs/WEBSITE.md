@@ -56,7 +56,7 @@ Account consistency behavior:
 
 ## 4. Session Engine (Website Mode)
 
-The website engine uses webcam + MediaPipe FaceMesh to detect blinks and fatigue.
+The website engine uses webcam + MediaPipe Tasks Vision FaceLandmarker to detect blinks and fatigue.
 
 ### Detection logic
 - EAR-based eye state classification.

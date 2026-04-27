@@ -28,20 +28,12 @@ interface FaceLandmark {
   z?: number;
 }
 
-interface FaceMeshResults {
-  multiFaceLandmarks?: FaceLandmark[][];
+interface FaceLandmarkerResults {
+  faceLandmarks?: FaceLandmark[][];
 }
 
-interface FaceMeshInstance {
-  setOptions: (options: {
-    maxNumFaces: number;
-    refineLandmarks: boolean;
-    minDetectionConfidence: number;
-    minTrackingConfidence: number;
-  }) => void;
-  onResults: (callback: (results: FaceMeshResults) => void) => void;
-  initialize: () => Promise<void>;
-  send: (input: { image: CanvasImageSource }) => Promise<void>;
+interface FaceLandmarkerInstance {
+  detectForVideo: (image: CanvasImageSource, timestampMs: number) => FaceLandmarkerResults;
   close: () => void;
 }
 
@@ -55,14 +47,35 @@ interface HiddenTrackReader {
   releaseLock?: () => void;
 }
 
-interface FaceMeshConstructor {
-  new (config: { locateFile: (file: string) => string }): FaceMeshInstance;
+interface FilesetResolverInstance {}
+
+interface FilesetResolverStatic {
+  forVisionTasks: (wasmBasePath: string) => Promise<FilesetResolverInstance>;
 }
 
-declare global {
-  interface Window {
-    FaceMesh?: FaceMeshConstructor;
+interface FaceLandmarkerStatic {
+  createFromOptions: (
+    filesetResolver: FilesetResolverInstance,
+    options: {
+      baseOptions: { modelAssetPath: string; delegate?: 'CPU' | 'GPU' };
+      runningMode: 'VIDEO';
+      numFaces: number;
+    }
+  ) => Promise<FaceLandmarkerInstance>;
+}
+
+interface VisionBundleModule {
+  FaceLandmarker: FaceLandmarkerStatic;
+  FilesetResolver: FilesetResolverStatic;
+}
+
+let visionBundlePromise: Promise<VisionBundleModule> | null = null;
+
+function loadVisionBundle(): Promise<VisionBundleModule> {
+  if (!visionBundlePromise) {
+    visionBundlePromise = import('@mediapipe/tasks-vision') as unknown as Promise<VisionBundleModule>;
   }
+  return visionBundlePromise;
 }
 
 type FatigueCallback = (state: FatigueState) => void;
@@ -82,7 +95,7 @@ function computeEAR(landmarks: FaceLandmark[], eyeIndices: number[]): number {
   return (v1 + v2) / (2.0 * h);
 }
 
-// MediaPipe FaceMesh eye landmark indices
+// MediaPipe eye landmark indices
 const LEFT_EYE = [362, 385, 387, 263, 373, 380];
 const RIGHT_EYE = [33, 160, 158, 133, 153, 144];
 
@@ -126,7 +139,7 @@ function getDefaultNotificationSettings(): NotificationSettings {
 }
 
 export class FatigueEngine {
-  private faceMesh: FaceMeshInstance | null = null;
+  private faceLandmarker: FaceLandmarkerInstance | null = null;
   private videoElement: HTMLVideoElement | null = null;
   private onFatigueUpdate: FatigueCallback;
   private onAlert: AlertCallback;
@@ -364,7 +377,7 @@ export class FatigueEngine {
       const videoFrame = frame.value as CanvasImageSource & { close?: () => void };
       try {
         this.processingCtx.drawImage(videoFrame, 0, 0, this.processingCanvas.width, this.processingCanvas.height);
-        await this.sendFrameForDetection(this.processingCanvas);
+        this.runDetection(this.processingCanvas);
       } finally {
         videoFrame.close?.();
       }
@@ -376,9 +389,10 @@ export class FatigueEngine {
     }
   }
 
-  private async sendFrameForDetection(image: CanvasImageSource): Promise<void> {
-    if (!this.faceMesh) return;
-    await this.faceMesh.send({ image });
+  private runDetection(image: CanvasImageSource): void {
+    if (!this.faceLandmarker) return;
+    const results = this.faceLandmarker.detectForVideo(image, performance.now());
+    this.processResults(results);
   }
 
   private async runHiddenFrameLoop(): Promise<void> {
@@ -417,9 +431,9 @@ export class FatigueEngine {
             try {
               if (this.processingCtx && this.processingCanvas) {
                 this.processingCtx.drawImage(bitmap, 0, 0, this.processingCanvas.width, this.processingCanvas.height);
-                await this.sendFrameForDetection(this.processingCanvas);
+                this.runDetection(this.processingCanvas);
               } else {
-                await this.sendFrameForDetection(bitmap);
+                this.runDetection(bitmap);
               }
               detected = true;
             } finally {
@@ -434,9 +448,9 @@ export class FatigueEngine {
         if (!detected && this.videoElement?.readyState && this.videoElement.readyState >= 2) {
           if (this.processingCtx && this.processingCanvas) {
             this.processingCtx.drawImage(this.videoElement, 0, 0, this.processingCanvas.width, this.processingCanvas.height);
-            await this.sendFrameForDetection(this.processingCanvas);
+            this.runDetection(this.processingCanvas);
           } else {
-            await this.sendFrameForDetection(this.videoElement);
+            this.runDetection(this.videoElement);
           }
         }
 
@@ -504,50 +518,16 @@ export class FatigueEngine {
       this.closeHiddenTrackReader();
       this.cameraStream = null;
       this.imageCapture = null;
-      // Load FaceMesh via CDN
-      const FaceMesh = window.FaceMesh;
-      
-      // Wait for FaceMesh to load if not available immediately
-      if (!FaceMesh) {
-        await new Promise<void>((resolve, reject) => {
-          let attempts = 0;
-          const maxAttempts = 50; // 5 seconds with 100ms intervals
-          const checkInterval = setInterval(() => {
-            attempts++;
-            const fm = window.FaceMesh;
-            if (fm) {
-              clearInterval(checkInterval);
-              resolve();
-            } else if (attempts >= maxAttempts) {
-              clearInterval(checkInterval);
-              reject(new Error('MediaPipe FaceMesh failed to load. Please check your internet connection and refresh the page.'));
-            }
-          }, 100);
-        });
-      }
-
-      const FaceMeshFinal = window.FaceMesh;
-      if (!FaceMeshFinal) {
-        throw new Error('MediaPipe FaceMesh is unavailable.');
-      }
-
-      this.faceMesh = new FaceMeshFinal({
-        locateFile: (file: string) =>
-          `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
+      const { FilesetResolver, FaceLandmarker } = await loadVisionBundle();
+      const filesetResolver = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
+      this.faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+        baseOptions: {
+          modelAssetPath: '/mediapipe/face_landmarker.task',
+          delegate: 'CPU',
+        },
+        runningMode: 'VIDEO',
+        numFaces: 1,
       });
-
-      this.faceMesh.setOptions({
-        maxNumFaces: 1,
-        refineLandmarks: true,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-      });
-
-      this.faceMesh.onResults((results: FaceMeshResults) => {
-        this.processResults(results);
-      });
-      
-      await this.faceMesh.initialize();
 
       // Start camera
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -584,7 +564,7 @@ export class FatigueEngine {
   }
 
   private async processFrame(): Promise<void> {
-    if (!this.running || !this.faceMesh) return;
+    if (!this.running || !this.faceLandmarker) return;
 
     if (!this.isTabVisible) {
       this.scheduleNextFrame();
@@ -594,9 +574,9 @@ export class FatigueEngine {
     if (this.videoElement && this.videoElement.readyState >= 2) {
       if (this.processingCtx && this.processingCanvas) {
         this.processingCtx.drawImage(this.videoElement, 0, 0, this.processingCanvas.width, this.processingCanvas.height);
-        await this.sendFrameForDetection(this.processingCanvas);
+        this.runDetection(this.processingCanvas);
       } else {
-        await this.sendFrameForDetection(this.videoElement);
+        this.runDetection(this.videoElement);
       }
     }
 
@@ -604,14 +584,14 @@ export class FatigueEngine {
     this.scheduleNextFrame();
   }
 
-  private processResults(results: FaceMeshResults): void {
-    if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+  private processResults(results: FaceLandmarkerResults): void {
+    if (!results.faceLandmarks || results.faceLandmarks.length === 0) {
       this.handleUnknownTrackingFrame(Date.now());
       this.emitState();
       return;
     }
 
-    const landmarks = results.multiFaceLandmarks[0];
+    const landmarks = results.faceLandmarks[0];
     const leftEAR = computeEAR(landmarks, LEFT_EYE);
     const rightEAR = computeEAR(landmarks, RIGHT_EYE);
     const avgEAR = (leftEAR + rightEAR) / 2;
@@ -900,9 +880,9 @@ export class FatigueEngine {
       this.videoElement.srcObject = null;
     }
 
-    if (this.faceMesh) {
-      this.faceMesh.close();
-      this.faceMesh = null;
+    if (this.faceLandmarker) {
+      this.faceLandmarker.close();
+      this.faceLandmarker = null;
     }
 
     const sessionMinutes = (Date.now() - this.sessionStart) / 60000;
