@@ -1,6 +1,9 @@
 const express = require('express');
+const pino = require('pino');
 const { pool } = require('../db');
 const { authenticateToken } = require('../middleware/auth');
+
+const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
 const router = express.Router();
 
@@ -68,7 +71,7 @@ router.get('/weekly', authenticateToken, async (req, res) => {
       })),
     });
   } catch (err) {
-    console.error('Weekly analytics error:', err);
+    logger.error({ err }, 'Weekly analytics error');
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -159,7 +162,7 @@ router.get('/monthly', authenticateToken, async (req, res) => {
       })),
     });
   } catch (err) {
-    console.error('Monthly analytics error:', err);
+    logger.error({ err }, 'Monthly analytics error');
     res.status(500).json({ error: 'Internal server error' });
   }
 });

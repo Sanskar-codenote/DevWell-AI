@@ -73,11 +73,14 @@ Create `backend/.env` with values like:
 
 ```env
 PORT=3001
+FRONTEND_PORT=5173
 JWT_SECRET=your_strong_secret_here
 DB_USER=dev16
 DB_HOST=/var/run/postgresql
 DB_NAME=devwell_dev
 DB_PORT=5432
+# Optional in local Unix socket setup
+# DB_PASSWORD=postgres
 # Optional: lock CORS to a specific published extension
 # EXTENSION_ID=your_chrome_extension_id
 ```
@@ -112,6 +115,109 @@ Default local URLs:
 - Frontend: `http://localhost:5173` (or `5174`)
 - Backend: `http://localhost:3001`
 
+## Docker
+
+### Setup
+
+1. Copy env template:
+```bash
+cp .env.docker.example .env
+```
+
+2. Edit `.env` with your values:
+```env
+FRONTEND_PORT=80
+BACKEND_PORT=3001
+
+# REQUIRED — generate a strong secret: openssl rand -base64 64
+JWT_SECRET=<your-strong-secret>
+
+DB_USER=devwell
+DB_PASSWORD=<strong-db-password>
+DB_HOST=db
+DB_NAME=devwell_production
+DB_PORT=5432
+DB_POOL_MAX=20
+
+# REQUIRED — your production domain(s), comma-separated
+CORS_ALLOWED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com
+
+# REQUIRED — your published Chrome extension ID
+EXTENSION_ID=<your-extension-id>
+
+LOG_LEVEL=info
+```
+
+3. Build and run:
+```bash
+docker compose up -d --build
+```
+
+4. Verify everything is healthy:
+```bash
+docker compose ps                       # All services should show "healthy"
+curl http://localhost:3001/api/health    # Deep health check (verifies DB connectivity)
+```
+
+- Frontend: `http://localhost:80` (or your `FRONTEND_PORT`)
+- Backend: `http://localhost:3001` (or your `BACKEND_PORT`)
+
+### What the Stack Provides
+
+| Feature | Detail |
+|---|---|
+| **Frontend** | Built React app served by Nginx with gzip, security headers, and 1-year static asset caching |
+| **Backend** | Node.js running as non-root user (`appuser`) with `dumb-init` for proper signal handling |
+| **Database** | PostgreSQL 16 Alpine with health checks and persistent volume |
+| **Security** | Helmet headers, CORS enforcement, rate limiting (100 req/15min API, 5 req/15min auth) |
+| **Logging** | Structured JSON logs via pino (pretty-printed in dev, JSON in production) |
+| **Health checks** | All 3 services have Docker health checks; backend deep-checks DB connectivity |
+| **Resource limits** | Memory and CPU limits per service |
+| **Env validation** | Backend fails fast on startup if required env vars are missing or JWT_SECRET is a default value |
+
+### Database Backups
+
+A backup script is included at `scripts/backup-db.sh`:
+
+```bash
+# Manual backup
+./scripts/backup-db.sh
+
+# Automated daily backups (add to crontab)
+# crontab -e
+0 2 * * * cd /path/to/DevWell && ./scripts/backup-db.sh >> /var/log/devwell-backup.log 2>&1
+```
+
+Backups are gzipped and saved to `./backups/`. Old backups are automatically cleaned after 30 days (configurable via `RETAIN_DAYS`).
+
+### TLS/HTTPS
+
+The Docker stack serves over HTTP. For production HTTPS, place a reverse proxy in front:
+
+- **Caddy** (recommended, automatic HTTPS): `caddy reverse-proxy --from yourdomain.com --to localhost:80`
+- **Traefik**: Add as a service in docker-compose with Let's Encrypt integration
+- **Cloud provider**: Use your provider's load balancer with TLS termination (AWS ALB, GCP LB, etc.)
+
+### View Logs
+
+```bash
+docker compose logs -f             # All services
+docker compose logs -f backend     # Backend only (JSON structured logs)
+```
+
+### Stopping / Rebuilding
+
+```bash
+# Stop all services
+docker compose down
+
+# Rebuild after code changes
+docker compose up -d --build
+
+# Full reset (WARNING: deletes database data)
+docker compose down -v
+```
+
 ## Privacy Model
 
 - Camera processing is local on device.
@@ -119,11 +225,16 @@ Default local URLs:
 - No video frames or face landmark arrays are uploaded.
 - In Guest Mode, session data stays local in extension storage.
 
-## Production Notes
+## Production Checklist
 
-- Set `NODE_ENV=production` where appropriate.
-- Configure `EXTENSION_ID` in backend env to strictly allow your published extension origin.
-- Keep local MediaPipe assets packaged:
+- [ ] Strong `JWT_SECRET` set (not the default value)
+- [ ] Strong `DB_PASSWORD` set
+- [ ] `CORS_ALLOWED_ORIGINS` set to your production domain(s)
+- [ ] `EXTENSION_ID` set to your published Chrome extension ID
+- [ ] TLS/HTTPS configured via reverse proxy
+- [ ] Database backup cron job set up
+- [ ] `LOG_LEVEL` set appropriately
+- [ ] Keep local MediaPipe assets packaged:
   - Frontend: `frontend/public/mediapipe/`
   - Extension: `chrome-extension/lib/`
 

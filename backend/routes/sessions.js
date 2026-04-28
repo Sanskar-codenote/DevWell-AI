@@ -1,7 +1,10 @@
 const express = require('express');
 const zod = require('zod');
+const pino = require('pino');
 const { pool } = require('../db');
 const { authenticateToken } = require('../middleware/auth');
+
+const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
 const router = express.Router();
 
@@ -28,9 +31,7 @@ router.post('/', authenticateToken, async (req, res) => {
   try {
     const validated = sessionSchema.safeParse(req.body);
     if (!validated.success) {
-      console.error('[Sessions] Validation failed:', JSON.stringify(req.body));
-      console.error('[Sessions] Zod issues:', JSON.stringify(validated.error.issues));
-      console.error('[Sessions] Validated data so far:', JSON.stringify(validated.data));
+      logger.warn({ body: req.body, issues: validated.error.issues }, 'Session validation failed');
       
       const details = validated.error.issues 
         ? validated.error.issues.map(e => e.message) 
@@ -52,7 +53,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
     res.status(201).json({ session: result.rows[0] });
   } catch (err) {
-    console.error('Create session error:', err);
+    logger.error({ err }, 'Create session error');
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -78,7 +79,7 @@ router.get('/', authenticateToken, async (req, res) => {
 
     res.json({ sessions: result.rows });
   } catch (err) {
-    console.error('List sessions error:', err);
+    logger.error({ err }, 'List sessions error');
     res.status(500).json({ error: 'Internal server error' });
   }
 });

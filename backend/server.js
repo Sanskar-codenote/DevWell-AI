@@ -1,48 +1,103 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const pino = require('pino');
 require('dotenv').config();
 
-const { initDB, closePool } = require('./db');
+const { initDB, closePool, pool } = require('./db');
 const authRoutes = require('./routes/auth');
 const sessionsRoutes = require('./routes/sessions');
 const analyticsRoutes = require('./routes/analytics');
 
+// ─── Structured Logger ──────────────────────────────────────────────────────
+const logger = pino({
+  level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
+  ...(process.env.NODE_ENV !== 'production' && {
+    transport: { target: 'pino-pretty', options: { colorize: true } },
+  }),
+});
+
+// ─── Environment Validation ─────────────────────────────────────────────────
+const REQUIRED_ENV = ['JWT_SECRET', 'DB_USER', 'DB_NAME', 'DB_PORT'];
+const PRODUCTION_ENV = ['DB_PASSWORD', 'CORS_ALLOWED_ORIGINS'];
+
+function validateEnv() {
+  const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
+  if (missing.length > 0) {
+    logger.fatal({ missing }, 'Missing required environment variables');
+    process.exit(1);
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    const missingProd = PRODUCTION_ENV.filter((key) => !process.env[key]);
+    if (missingProd.length > 0) {
+      logger.fatal({ missing: missingProd }, 'Missing required PRODUCTION environment variables');
+      process.exit(1);
+    }
+
+    if (process.env.JWT_SECRET === 'change_me_in_real_use' || process.env.JWT_SECRET === 'change_me') {
+      logger.fatal('JWT_SECRET must be changed from default value in production');
+      process.exit(1);
+    }
+  }
+
+  logger.info('Environment validated');
+}
+
+validateEnv();
+
+// ─── Express App ────────────────────────────────────────────────────────────
 const app = express();
 const PORT = process.env.PORT || 3001;
+const frontendPort = process.env.FRONTEND_PORT || '5173';
 
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  'http://localhost:5174',
-  'http://127.0.0.1:5174',
+// ─── Security Middleware ────────────────────────────────────────────────────
+app.use(helmet());
+app.use(express.json({ limit: '1mb' }));
+
+// ─── CORS ───────────────────────────────────────────────────────────────────
+const defaultAllowedOrigins = [
+  `http://localhost:${frontendPort}`,
+  `http://127.0.0.1:${frontendPort}`,
 ];
+
+const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS
+  ? process.env.CORS_ALLOWED_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean)
+  : defaultAllowedOrigins;
 
 app.use(cors({
   origin: (origin, callback) => {
     // Allow non-browser clients (curl/postman) with no Origin header.
     if (!origin) return callback(null, true);
-    
+
     // Allow Chrome extensions (chrome-extension://*)
     if (origin.startsWith('chrome-extension://')) {
       const extensionId = origin.split('://')[1];
+
       if (process.env.EXTENSION_ID && extensionId === process.env.EXTENSION_ID) {
         return callback(null, true);
       }
-      if (!process.env.EXTENSION_ID) {
-        return callback(null, true); // Allow all if not specified (for dev)
+
+      // In production, require EXTENSION_ID to be set
+      if (process.env.NODE_ENV === 'production') {
+        logger.warn({ origin }, 'Chrome extension request blocked — EXTENSION_ID not configured');
+        return callback(new Error('Chrome extension not authorized'));
       }
+
+      // In development, allow all extensions
+      return callback(null, true);
     }
-    
-    // Allow localhost origins
+
+    // Allow listed origins
     if (allowedOrigins.includes(origin)) return callback(null, true);
-    
+
     return callback(new Error(`CORS blocked for origin: ${origin}`));
   },
   credentials: true,
 }));
-app.use(express.json());
 
+// ─── Rate Limiting ──────────────────────────────────────────────────────────
 if (process.env.NODE_ENV === 'production') {
   const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -64,14 +119,35 @@ const authLimiter = rateLimit({
 app.use('/api/v1/auth/login', authLimiter);
 app.use('/api/v1/auth/register', authLimiter);
 
+// ─── Routes ─────────────────────────────────────────────────────────────────
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/sessions', sessionsRoutes);
 app.use('/api/v1/analytics', analyticsRoutes);
 
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// ─── Deep Health Check ──────────────────────────────────────────────────────
+app.get('/api/health', async (req, res) => {
+  const health = {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    checks: {},
+  };
+
+  try {
+    const start = Date.now();
+    await pool.query('SELECT 1');
+    health.checks.database = { status: 'ok', responseMs: Date.now() - start };
+  } catch (err) {
+    health.status = 'degraded';
+    health.checks.database = { status: 'error', message: err.message };
+    logger.error({ err }, 'Health check: database unreachable');
+  }
+
+  const statusCode = health.status === 'ok' ? 200 : 503;
+  res.status(statusCode).json(health);
 });
 
+// ─── Error Handler ──────────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
   if (res.headersSent) {
     return next(err);
@@ -79,7 +155,7 @@ app.use((err, req, res, next) => {
 
   const isCorsError = err instanceof Error && err.message.startsWith('CORS blocked for origin:');
   if (!isCorsError) {
-    console.error(err);
+    logger.error({ err, method: req.method, url: req.url }, 'Unhandled error');
   }
 
   res.status(isCorsError ? 403 : 500).json({
@@ -87,23 +163,24 @@ app.use((err, req, res, next) => {
   });
 });
 
+// ─── Server Startup ─────────────────────────────────────────────────────────
 async function start() {
   await initDB();
   const server = app.listen(PORT, () => {
-    console.log(`DevWell API running on http://localhost:${PORT}`);
+    logger.info({ port: PORT, env: process.env.NODE_ENV || 'development' }, 'DevWell API started');
   });
 
   const shutdown = async (signal) => {
-    console.log(`\n${signal} received. Shutting down gracefully...`);
+    logger.info({ signal }, 'Shutting down gracefully…');
     server.close(async () => {
-      console.log('HTTP server closed');
+      logger.info('HTTP server closed');
       await closePool();
       process.exit(0);
     });
 
     // If server doesn't close in 10s, force shutdown
     setTimeout(() => {
-      console.error('Could not close connections in time, forcefully shutting down');
+      logger.error('Could not close connections in time, forcefully shutting down');
       process.exit(1);
     }, 10000);
   };
@@ -112,4 +189,7 @@ async function start() {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-start().catch(console.error);
+start().catch((err) => {
+  logger.fatal({ err }, 'Failed to start server');
+  process.exit(1);
+});

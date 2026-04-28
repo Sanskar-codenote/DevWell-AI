@@ -1,9 +1,8 @@
 const APP_URL_PATTERNS = [
-  'http://localhost:5173/*',
-  'http://127.0.0.1:5173/*',
-  'http://localhost:5174/*',
-  'http://127.0.0.1:5174/*',
+  '__APP_URL_PATTERN__',
 ];
+const APP_BASE_URL = '__APP_BASE_URL__';
+const API_BASE_URL = '__API_BASE_URL__';
 
 const MONITOR_URL = 'monitor.html';
 const DEFAULT_NOTIFICATION_SETTINGS = {
@@ -233,7 +232,7 @@ class DevWellBackground {
     };
 
     try {
-      const res = await fetch('http://localhost:3001/api/v1/sessions', {
+      const res = await fetch(`${API_BASE_URL}/api/v1/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.extensionAuth.token}` },
         body: JSON.stringify(payload)
@@ -560,12 +559,13 @@ class DevWellBackground {
 
   async openDashboard() {
     const { appBaseUrl } = await chrome.storage.local.get('appBaseUrl');
-    const tabs = await chrome.tabs.query({ url: `${appBaseUrl || 'http://localhost:5173'}/dashboard*` });
+    const baseUrl = appBaseUrl || APP_BASE_URL;
+    const tabs = await chrome.tabs.query({ url: `${baseUrl}/dashboard*` });
     if (tabs.length > 0 && tabs[0].id) {
       await chrome.tabs.update(tabs[0].id, { active: true });
       return;
     }
-    await chrome.tabs.create({ url: `${appBaseUrl || 'http://localhost:5173'}/dashboard` });
+    await chrome.tabs.create({ url: `${baseUrl}/dashboard` });
   }
 }
 

@@ -1,9 +1,7 @@
 const APP_BASES = [
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  'http://localhost:5174',
-  'http://127.0.0.1:5174',
+  '__APP_BASE_URL__',
 ];
+const API_BASE_URL = '__API_BASE_URL__';
 
 class DevWellPopup {
   constructor() {
@@ -246,7 +244,7 @@ class DevWellPopup {
     this.elements.loginBtn.textContent = 'Logging in...';
 
     try {
-      const response = await fetch('http://localhost:3001/api/v1/auth/login', {
+      const response = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
@@ -590,7 +588,7 @@ class DevWellPopup {
       
       // Check if website is open in any tab
       const tabs = await chrome.tabs.query({
-        url: ['http://localhost:5173/*', 'http://127.0.0.1:5173/*']
+        url: ['__APP_URL_PATTERN__']
       });
       
       console.log('[Extension] Found website tabs:', tabs.length);
