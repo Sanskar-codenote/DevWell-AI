@@ -10,6 +10,7 @@ const REOPEN_STABILITY_MS = 90;
 const HIDDEN_READER_TIMEOUT_MS = 280;
 const HIDDEN_GRAB_TIMEOUT_MS = 280;
 const HIDDEN_LOOP_BACKOFF_MS = 40;
+const VISIBLE_FRAME_INTERVAL_MS = 66; // ~15 FPS
 
 let sessionActive = false;
 let sessionStartTime = null;
@@ -286,7 +287,8 @@ async function startSession() {
           delegate: 'CPU'
         },
         runningMode: 'VIDEO',
-        numFaces: 1
+        numFaces: 1,
+        outputFaceBlendshapes: true
       });
       console.log('[DevWell Monitor] FaceLandmarker initialized.');
     } catch (err) {
@@ -407,8 +409,8 @@ async function processFrame() {
   
   // Ensure we have a video element and it's ready
   if (videoElement.readyState >= 2) {
-    // When visible, we target ~30fps (33ms).
-    const minDelay = 33;
+    // When visible, we target ~15fps (66ms).
+    const minDelay = VISIBLE_FRAME_INTERVAL_MS;
     
     if (now - lastVideoTime >= minDelay) {
       lastVideoTime = now;

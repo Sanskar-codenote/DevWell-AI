@@ -60,6 +60,7 @@ interface FaceLandmarkerStatic {
       baseOptions: { modelAssetPath: string; delegate?: 'CPU' | 'GPU' };
       runningMode: 'VIDEO';
       numFaces: number;
+      outputFaceBlendshapes?: boolean;
     }
   ) => Promise<FaceLandmarkerInstance>;
 }
@@ -117,6 +118,7 @@ const HIDDEN_GRAB_TIMEOUT_MS = 280;
 const HIDDEN_LOOP_BACKOFF_MS = 40;
 const BACKGROUND_DROWSY_MIN_CLOSED_SAMPLES = 3;
 const BACKGROUND_SPARSE_GAP_MS = 700;
+const VISIBLE_FRAME_INTERVAL_MS = 66; // ~15 FPS
 
 interface NotificationSettings {
   lowFatigueThreshold: number;
@@ -172,6 +174,7 @@ export class FatigueEngine {
   private lastBlinkAt = 0;
   private closureSampleCount = 0;
   private lastResultAt = 0;
+  private lastVisibleProcessAt = 0;
   private processingCanvas: HTMLCanvasElement | null = null;
   private processingCtx: CanvasRenderingContext2D | null = null;
   private cameraStream: MediaStream | null = null;
@@ -512,6 +515,7 @@ export class FatigueEngine {
       this.openStateStartAt = 0;
       this.lastBlinkAt = 0;
       this.lastResultAt = 0;
+      this.lastVisibleProcessAt = 0;
       this.closureSampleCount = 0;
       this.lastFatigueAlertAt = 0;
       this.hiddenFrameLoopActive = false;
@@ -527,6 +531,7 @@ export class FatigueEngine {
         },
         runningMode: 'VIDEO',
         numFaces: 1,
+        outputFaceBlendshapes: true,
       });
 
       // Start camera
@@ -570,6 +575,13 @@ export class FatigueEngine {
       this.scheduleNextFrame();
       return;
     }
+
+    const nowPerf = performance.now();
+    if (nowPerf - this.lastVisibleProcessAt < VISIBLE_FRAME_INTERVAL_MS) {
+      this.scheduleNextFrame();
+      return;
+    }
+    this.lastVisibleProcessAt = nowPerf;
 
     if (this.videoElement && this.videoElement.readyState >= 2) {
       if (this.processingCtx && this.processingCanvas) {
