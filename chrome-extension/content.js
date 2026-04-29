@@ -225,7 +225,6 @@ class DevWellContentScript {
       this.sessionActive = nextSessionActive;
       this.sessionData = nextSessionData;
       void this.safeStorageSet({
-        appBaseUrl: window.location.origin,
         sessionActive: nextSessionActive,
         sessionData: nextSessionData,
       });
@@ -274,7 +273,6 @@ class DevWellContentScript {
       this.sessionActive = false;
       this.sessionData = null;
       void this.safeStorageSet({
-        appBaseUrl: window.location.origin,
         websiteAuth: nextAuth,
         pendingWebsiteAction: null,
         sessionActive: false,
@@ -284,7 +282,6 @@ class DevWellContentScript {
     }
 
     void this.safeStorageSet({
-      appBaseUrl: window.location.origin,
       websiteAuth: nextAuth,
     });
   }

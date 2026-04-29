@@ -4,6 +4,18 @@ import path from 'node:path';
 const root = path.resolve('.');
 const outDir = path.join(root, 'dist');
 
+// Load .env if exists
+const envPath = path.join(root, '.env');
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, 'utf8');
+  envContent.split('\n').forEach(line => {
+    const [key, ...valueParts] = line.split('=');
+    if (key && valueParts.length > 0) {
+      process.env[key.trim()] = valueParts.join('=').trim();
+    }
+  });
+}
+
 const appBaseUrl = process.env.APP_BASE_URL;
 const apiBaseUrl = process.env.API_BASE_URL;
 

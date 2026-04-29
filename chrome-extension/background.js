@@ -1,6 +1,15 @@
-const APP_URL_PATTERNS = [
-  '__APP_URL_PATTERN__',
-];
+// Clear stale session state on browser startup to prevent sessions from incorrectly
+// resuming when the browser restores the previous tabs.
+chrome.runtime.onStartup.addListener(() => {
+  console.log('[DevWell Background] Browser startup: clearing stale session data.');
+  chrome.storage.local.set({
+    sessionActive: false,
+    sessionData: null,
+    monitorTabId: null,
+    sessionError: null
+  });
+});
+
 const APP_BASE_URL = '__APP_BASE_URL__';
 const API_BASE_URL = '__API_BASE_URL__';
 
@@ -367,6 +376,15 @@ class DevWellBackground {
         if (this.monitorTabId) {
           await chrome.tabs.update(this.monitorTabId, { autoDiscardable: false }).catch(() => undefined);
         }
+        
+        const startListener = (tabId, changeInfo) => {
+          if (tabId === this.monitorTabId && changeInfo.status === 'complete') {
+            chrome.tabs.sendMessage(tabId, { action: 'start' }).catch(e => console.log('Error sending start message to monitor tab.', e));
+            chrome.tabs.onUpdated.removeListener(startListener);
+          }
+        };
+        chrome.tabs.onUpdated.addListener(startListener);
+        
         await chrome.storage.local.set({ monitorTabId: this.monitorTabId });
         return { success: true };
 
@@ -524,7 +542,7 @@ class DevWellBackground {
   }
 
   async broadcastState() {
-    const tabs = await chrome.tabs.query({ url: APP_URL_PATTERNS });
+    const tabs = await chrome.tabs.query({});
     await Promise.all(
       tabs.map((tab) => {
         if (!tab.id) return Promise.resolve();
@@ -558,14 +576,12 @@ class DevWellBackground {
   }
 
   async openDashboard() {
-    const { appBaseUrl } = await chrome.storage.local.get('appBaseUrl');
-    const baseUrl = appBaseUrl || APP_BASE_URL;
-    const tabs = await chrome.tabs.query({ url: `${baseUrl}/dashboard*` });
+    const tabs = await chrome.tabs.query({ url: `${APP_BASE_URL}/dashboard*` });
     if (tabs.length > 0 && tabs[0].id) {
       await chrome.tabs.update(tabs[0].id, { active: true });
       return;
     }
-    await chrome.tabs.create({ url: `${baseUrl}/dashboard` });
+    await chrome.tabs.create({ url: `${APP_BASE_URL}/dashboard` });
   }
 }
 

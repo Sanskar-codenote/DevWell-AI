@@ -454,13 +454,12 @@ function stopSession() {
   chrome.runtime.sendMessage({ action: 'monitorStopped', data: buildSessionData() }).catch(() => undefined);
 }
 
-// Listen for messages from the background script to stop
+// Listen for messages from the background script
 chrome.runtime.onMessage.addListener((message) => {
-  if (message?.action === 'stop') {
+  if (message?.action === 'start') {
+    startSession();
+  } else if (message?.action === 'stop') {
     stopSession();
     // Tab can be closed by the background script after this message
   }
 });
-
-// Automatically start the session when the page loads
-startSession();
