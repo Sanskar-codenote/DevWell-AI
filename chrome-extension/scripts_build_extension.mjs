@@ -24,12 +24,6 @@ if (!appBaseUrl || !apiBaseUrl) {
   process.exit(1);
 }
 
-const localhostPattern = /(localhost|127\.0\.0\.1)/i;
-if (localhostPattern.test(appBaseUrl) || localhostPattern.test(apiBaseUrl)) {
-  console.error('Refusing localhost values. Use real production URLs in APP_BASE_URL and API_BASE_URL.');
-  process.exit(1);
-}
-
 const app = new URL(appBaseUrl);
 const api = new URL(apiBaseUrl);
 if (!['http:', 'https:'].includes(app.protocol) || !['http:', 'https:'].includes(api.protocol)) {
