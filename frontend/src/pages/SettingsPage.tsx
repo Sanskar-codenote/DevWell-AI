@@ -122,7 +122,13 @@ export default function SettingsPage() {
 
   const syncSettingsToExtension = async (settings: SettingsData) => {
     try {
-      // Check if we're running in a browser with chrome extension support
+      // Use the DOM-based bridge for cross-browser compatibility (works in Firefox/Safari)
+      document.documentElement.setAttribute('data-devwell-extension-command', JSON.stringify({
+        type: 'syncSettings',
+        settings: settings
+      }));
+
+      // Fallback: Also try direct message if available (Chrome legacy)
       if (window.chrome?.runtime?.sendMessage) {
         try {
           await window.chrome.runtime.sendMessage({
@@ -130,11 +136,7 @@ export default function SettingsPage() {
             settings: settings
           });
         } catch (error) {
-          console.error('Error sending message to extension:', error);
-          // Try alternative approach - set storage directly
-          if (window.chrome?.storage?.local) {
-            await window.chrome.storage.local.set({ websiteSettings: settings });
-          }
+          // Handled by DOM bridge
         }
       }
     } catch (err) {

@@ -74,28 +74,35 @@ app.use(cors({
     // Allow non-browser clients (curl/postman) with no Origin header.
     if (!origin) return callback(null, true);
 
-    // Allow Chrome extensions (chrome-extension://*)
-    if (origin.startsWith('chrome-extension://')) {
-      const extensionId = origin.split('://')[1];
+    // Allow browser extensions (chrome-extension://* or moz-extension://*)
+    if (origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://')) {
+      // Extract ID accurately (remove protocol and any trailing path/slashes)
+      const extensionId = origin.split('://')[1].split('/')[0];
+      
+      const configuredIds = process.env.EXTENSION_ID 
+        ? process.env.EXTENSION_ID.split(',').map(id => id.trim()) 
+        : [];
 
-      if (process.env.EXTENSION_ID && extensionId === process.env.EXTENSION_ID) {
+      // Match found
+      if (configuredIds.length > 0 && configuredIds.includes(extensionId)) {
         return callback(null, true);
       }
 
-      // In production, require EXTENSION_ID to be set
-      if (process.env.NODE_ENV === 'production') {
-        logger.warn({ origin }, 'Chrome extension request blocked — EXTENSION_ID not configured');
-        return callback(new Error('Chrome extension not authorized'));
+      // In production, require a match if EXTENSION_ID is configured
+      if (process.env.NODE_ENV === 'production' && configuredIds.length > 0) {
+        logger.warn({ origin, extensionId }, 'Extension request blocked — ID mismatch');
+        return callback(null, false); // Return false instead of Error to avoid 500
       }
 
-      // In development, allow all extensions
+      // In development or if no IDs are configured, allow all extensions
       return callback(null, true);
     }
 
     // Allow listed origins
     if (allowedOrigins.includes(origin)) return callback(null, true);
 
-    return callback(new Error(`CORS blocked for origin: ${origin}`));
+    logger.warn({ origin }, 'CORS blocked for origin');
+    return callback(null, false);
   },
   credentials: true,
 }));

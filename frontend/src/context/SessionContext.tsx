@@ -417,13 +417,27 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [claimOwnership, extensionAuthMismatch, extensionAvailable, handleAlert, isStarting, startOwnedSession, syncFromSharedSnapshot]);
 
   const stopSession = useCallback(async () => {
-    if (extensionAvailable) {
-      if (extensionCommandInFlightRef.current) return;
-      extensionCommandInFlightRef.current = true;
+    // Always attempt to notify the extension via the DOM-based bridge.
+    // This is the most reliable cross-browser method (works in Chrome and Firefox).
+    try {
       document.documentElement.setAttribute(
         EXTENSION_COMMAND_ATTRIBUTE,
         JSON.stringify({ type: 'stop', requestedAt: Date.now() })
       );
+      
+      // Cleanup the attribute after a short delay
+      window.setTimeout(() => {
+        if (document.documentElement.getAttribute(EXTENSION_COMMAND_ATTRIBUTE)) {
+          document.documentElement.removeAttribute(EXTENSION_COMMAND_ATTRIBUTE);
+        }
+      }, 500);
+    } catch (e) {
+      console.warn('Could not set extension command attribute:', e);
+    }
+
+    if (extensionAvailable) {
+      if (extensionCommandInFlightRef.current) return;
+      extensionCommandInFlightRef.current = true;
       window.setTimeout(() => {
         extensionCommandInFlightRef.current = false;
       }, 2000);

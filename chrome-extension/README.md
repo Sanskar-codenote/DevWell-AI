@@ -21,15 +21,26 @@ A Manifest V3 Chrome extension that provides real-time developer wellness monito
 2.  **Install & Build**:
     ```bash
     npm install
+    
+    # For Chrome/Edge/Brave
     npm run build
+    
+    # For Firefox
+    npm run build:firefox
     ```
     This generates the final extension files in the `dist/` directory.
 
-3.  **Load into Chrome**:
-    - Open `chrome://extensions`.
-    - Enable **Developer mode**.
-    - Click **Load unpacked**.
-    - Select the **`chrome-extension/dist/`** folder.
+3.  **Load into Browser**:
+    - **Chrome**:
+      - Open `chrome://extensions`.
+      - Enable **Developer mode**.
+      - Click **Load unpacked**.
+      - Select the **`chrome-extension/dist/`** folder.
+    - **Firefox**:
+      - Open `about:debugging`.
+      - Click **This Firefox**.
+      - Click **Load Temporary Add-on...**.
+      - Select the **`manifest.json`** inside **`chrome-extension/dist/`**.
 
 4.  **Usage**:
     - Pin the extension for easy access.

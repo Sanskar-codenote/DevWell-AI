@@ -76,12 +76,7 @@ export default function DashboardPage() {
               : 'Real-time fatigue monitoring'}
           </p>
         </div>
-        {extensionAvailable ? (
-          <div className="flex items-center gap-2 px-5 py-2.5 bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 rounded-xl text-sm font-medium">
-            <div className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
-            Extension Active
-          </div>
-        ) : !state.isRunning ? (
+        {!state.isRunning ? (
           <button
             onClick={handleStartSession}
             disabled={isStarting}
@@ -101,11 +96,6 @@ export default function DashboardPage() {
               </>
             )}
           </button>
-        ) : extensionAvailable ? (
-          <div className="flex items-center gap-2 px-5 py-2.5 bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 rounded-xl text-sm font-medium">
-            <div className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
-            Extension Active
-          </div>
         ) : (
           <button
             onClick={stopSession}

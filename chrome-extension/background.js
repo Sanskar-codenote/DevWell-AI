@@ -65,6 +65,16 @@ class DevWellBackground {
     chrome.notifications.onClicked.addListener(() => {
       void this.openDashboard();
     });
+
+    chrome.runtime.onSuspend.addListener(() => {
+      if (this.monitorTabId) {
+        chrome.tabs.remove(this.monitorTabId).catch(() => {});
+      }
+    });
+
+    chrome.runtime.onConnect.addListener((port) => {
+      console.log(`[DevWell Background] Port connected: ${port.name}`);
+    });
     
     // Listener to detect when the monitor tab is closed by the user
     chrome.tabs.onRemoved.addListener((tabId) => {

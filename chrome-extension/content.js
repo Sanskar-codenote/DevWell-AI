@@ -13,8 +13,6 @@ const DEFAULT_STATE = {
   sessionDurationMinutes: 0,
   isRunning: false,
 };
-const DASHBOARD_PATHS = ['/dashboard'];
-const ACTION_TIMEOUT_MS = 12000;
 
 class DevWellContentScript {
   constructor() {
@@ -24,14 +22,13 @@ class DevWellContentScript {
     this.extensionAuth = { loggedIn: false, email: null };
     this.extensionEngine = 'website';
     this.lastSyncedState = '';
-    this.pendingActionTimer = null;
 
     void this.init();
   }
 
   isRuntimeAvailable() {
     try {
-      return Boolean(chrome?.runtime?.id);
+      return !!(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage);
     } catch {
       return false;
     }
@@ -64,111 +61,73 @@ class DevWellContentScript {
     }
   }
 
-  safeStorageRemove(keys) {
-    if (!this.isRuntimeAvailable()) return Promise.resolve();
-    try {
-      return chrome.storage.local.remove(keys).catch(() => undefined);
-    } catch {
-      return Promise.resolve();
-    }
-  }
-
   async init() {
-    await this.safeStorageSet({ appBaseUrl: window.location.origin });
+    // 1. Basic initialization
     this.observeWebsiteState();
     this.observeWebsiteCommands();
+    
+    try {
+      await this.safeStorageSet({ appBaseUrl: window.location.origin });
+    } catch (e) {}
 
+    // 2. Listen for messages from background
     if (this.isRuntimeAvailable()) {
       chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      if (message?.action === 'sessionStateUpdate') {
-        this.sessionActive = Boolean(message.sessionActive);
-        this.sessionData = message.sessionData ?? null;
-        this.writeExtensionState(); // Update DOM attribute so website can see the new metrics
-        sendResponse?.({ success: true });
-        return;
-      }
-
-      if (message?.action === 'performNativeSessionAction') {
-        void this.performNativeSessionAction(message.sessionAction)
-          .then((success) => sendResponse?.({ success }))
-          .catch((error) => {
-            console.error('[DevWell Content] Failed to perform action:', error);
-            sendResponse?.({ success: false });
-          });
-        return true;
-      }
-
-      if (message?.action === 'syncSettings') {
-        // Forward the message to the website page
-        window.postMessage({
-          type: 'DEVWELL_SETTINGS_SYNC',
-          settings: message.settings
-        }, window.origin);
-        sendResponse?.({ success: true });
-        return;
-      }
-    });
+        if (message?.action === 'sessionStateUpdate') {
+          this.sessionActive = Boolean(message.sessionActive);
+          this.sessionData = message.sessionData ?? null;
+          this.writeExtensionState();
+          sendResponse?.({ success: true });
+        } else if (message?.action === 'syncSettings') {
+          window.postMessage({ type: 'DEVWELL_SETTINGS_SYNC', settings: message.settings }, window.origin);
+          sendResponse?.({ success: true });
+        }
+      });
     }
 
+    // 3. Listen for storage changes
     if (this.isRuntimeAvailable()) {
       chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName !== 'local') return;
+        if (areaName !== 'local') return;
 
-      if (changes.sessionActive) {
-        this.sessionActive = Boolean(changes.sessionActive.newValue);
-      }
+        if (changes.sessionActive) this.sessionActive = Boolean(changes.sessionActive.newValue);
+        if (changes.sessionData) this.sessionData = changes.sessionData.newValue ?? null;
+        if (changes.websiteAuth) this.websiteAuth = changes.websiteAuth.newValue ?? this.websiteAuth;
+        if (changes.extensionEngine) this.extensionEngine = changes.extensionEngine.newValue ?? this.extensionEngine;
+        
+        if (changes.extensionAuth) {
+          const auth = changes.extensionAuth.newValue;
+          this.extensionAuth = { loggedIn: Boolean(auth?.token), email: auth?.email ?? null };
+        }
 
-      if (changes.sessionData) {
-        this.sessionData = changes.sessionData.newValue ?? null;
-      }
-
-      if (changes.pendingWebsiteAction) {
-        this.schedulePendingActionCheck();
-      }
-
-      if (changes.websiteAuth) {
-        this.websiteAuth = changes.websiteAuth.newValue ?? this.websiteAuth;
-      }
-
-      if (changes.extensionAuth) {
-        const auth = changes.extensionAuth.newValue;
-        this.extensionAuth = {
-          loggedIn: Boolean(auth?.token),
-          email: auth?.email ?? null,
-        };
-      }
-
-      if (changes.extensionEngine) {
-        this.extensionEngine = changes.extensionEngine.newValue ?? this.extensionEngine;
-      }
-
-      if (changes.sessionActive || changes.sessionData || changes.extensionEngine || changes.extensionAuth) {
-        this.writeExtensionState();
-      }
-    });
+        if (changes.sessionActive || changes.sessionData || changes.extensionEngine || changes.extensionAuth) {
+          this.writeExtensionState();
+        }
+      });
     }
 
+    // 4. Hydrate initial state
     const result = await this.safeStorageGet(['sessionActive', 'sessionData', 'extensionEngine', 'extensionAuth']);
     this.sessionActive = Boolean(result.sessionActive);
     this.sessionData = result.sessionData ?? null;
-    this.extensionEngine = result.extensionEngine ?? this.extensionEngine;
+    this.extensionEngine = result.extensionEngine ?? 'website';
     this.extensionAuth = {
       loggedIn: Boolean(result.extensionAuth?.token),
       email: result.extensionAuth?.email ?? null,
     };
+    
+    // 5. Final sync
     this.writeExtensionState();
     this.syncFromWebsiteState();
     this.syncWebsiteAuth();
-    this.schedulePendingActionCheck();
   }
 
   observeWebsiteState() {
     const observer = new MutationObserver((mutations) => {
-      if (mutations.some((mutation) => mutation.attributeName === EXTENSION_STATE_ATTRIBUTE)) {
+      if (mutations.some((m) => m.attributeName === EXTENSION_STATE_ATTRIBUTE)) {
         this.syncFromWebsiteState();
       }
-
-      if (mutations.some((mutation) => mutation.attributeName === EXTENSION_AUTH_ATTRIBUTE)) {
+      if (mutations.some((m) => m.attributeName === EXTENSION_AUTH_ATTRIBUTE)) {
         this.syncWebsiteAuth();
       }
     });
@@ -181,7 +140,7 @@ class DevWellContentScript {
 
   observeWebsiteCommands() {
     const observer = new MutationObserver((mutations) => {
-      if (mutations.some((mutation) => mutation.attributeName === EXTENSION_COMMAND_ATTRIBUTE)) {
+      if (mutations.some((m) => m.attributeName === EXTENSION_COMMAND_ATTRIBUTE)) {
         this.handleWebsiteCommand();
       }
     });
@@ -196,15 +155,17 @@ class DevWellContentScript {
     const raw = document.documentElement.getAttribute(EXTENSION_COMMAND_ATTRIBUTE);
     if (!raw) return;
 
+    document.documentElement.removeAttribute(EXTENSION_COMMAND_ATTRIBUTE);
+
     let command;
     try {
       command = JSON.parse(raw);
-    } catch {
-      return;
-    }
+    } catch { return; }
 
     if (command?.type === 'stop') {
       void this.safeRuntimeSendMessage({ action: 'requestStopSession' });
+    } else if (command?.type === 'syncSettings') {
+      void this.safeRuntimeSendMessage({ action: 'syncWebsiteSettings', settings: command.settings });
     } else if (command?.type === 'ping') {
       this.writeExtensionState();
     }
@@ -216,21 +177,34 @@ class DevWellContentScript {
 
     try {
       const parsed = JSON.parse(rawState);
-      if (parsed?.source === 'extension') {
-        return;
-      }
-      const nextSessionActive = Boolean(parsed?.sessionActive);
-      const nextSessionData = parsed?.sessionData ?? null;
+      if (parsed?.source === 'extension') return;
+      
       this.lastSyncedState = rawState;
-      this.sessionActive = nextSessionActive;
-      this.sessionData = nextSessionData;
+      this.sessionActive = Boolean(parsed?.sessionActive);
+      this.sessionData = parsed?.sessionData ?? null;
       void this.safeStorageSet({
-        sessionActive: nextSessionActive,
-        sessionData: nextSessionData,
+        sessionActive: this.sessionActive,
+        sessionData: this.sessionData,
       });
-    } catch (error) {
-      console.error('[DevWell Content] Failed to parse website state:', error);
-    }
+    } catch (e) { console.error('[DevWell Content] Parse error:', e); }
+  }
+
+  syncWebsiteAuth() {
+    const rawAuth = document.documentElement.getAttribute(EXTENSION_AUTH_ATTRIBUTE);
+    if (!rawAuth) return;
+
+    try {
+      const parsed = JSON.parse(rawAuth);
+      const nextAuth = {
+        loggedIn: Boolean(parsed?.loggedIn),
+        email: parsed?.email ?? null,
+      };
+
+      if (nextAuth.loggedIn !== this.websiteAuth.loggedIn || nextAuth.email !== this.websiteAuth.email) {
+        this.websiteAuth = nextAuth;
+        void this.safeStorageSet({ websiteAuth: this.websiteAuth });
+      }
+    } catch (e) { console.error('[DevWell Content] Auth parse error:', e); }
   }
 
   writeExtensionState() {
@@ -246,115 +220,6 @@ class DevWellContentScript {
         extensionAuth: this.extensionAuth,
       })
     );
-  }
-
-  syncWebsiteAuth() {
-    const rawAuth = document.documentElement.getAttribute(EXTENSION_AUTH_ATTRIBUTE);
-    let nextAuth = {
-      loggedIn: false,
-      email: null,
-    };
-
-    if (rawAuth) {
-      try {
-        const parsed = JSON.parse(rawAuth);
-        nextAuth = {
-          loggedIn: Boolean(parsed?.loggedIn),
-          email: parsed?.email ?? null,
-        };
-      } catch (error) {
-        console.error('[DevWell Content] Failed to parse website auth:', error);
-      }
-    }
-
-    this.websiteAuth = nextAuth;
-
-    if (!nextAuth.loggedIn) {
-      this.sessionActive = false;
-      this.sessionData = null;
-      void this.safeStorageSet({
-        websiteAuth: nextAuth,
-        pendingWebsiteAction: null,
-        sessionActive: false,
-        sessionData: null,
-      });
-      return;
-    }
-
-    void this.safeStorageSet({
-      websiteAuth: nextAuth,
-    });
-  }
-
-  schedulePendingActionCheck() {
-    if (this.pendingActionTimer) {
-      clearTimeout(this.pendingActionTimer);
-    }
-
-    this.pendingActionTimer = setTimeout(() => {
-      void this.processPendingWebsiteAction();
-    }, 150);
-  }
-
-  async processPendingWebsiteAction() {
-    if (!this.isDashboardPage()) return;
-
-    const { pendingWebsiteAction } = await this.safeStorageGet('pendingWebsiteAction');
-    if (!pendingWebsiteAction?.type) return;
-
-    const success = await this.performNativeSessionAction(pendingWebsiteAction.type);
-    const isExpired = Date.now() - (pendingWebsiteAction.requestedAt || 0) > ACTION_TIMEOUT_MS;
-
-    if (success || isExpired) {
-      await this.safeStorageRemove('pendingWebsiteAction');
-    }
-  }
-
-  isDashboardPage() {
-    return DASHBOARD_PATHS.some((path) => window.location.pathname.startsWith(path));
-  }
-
-  async performNativeSessionAction(sessionAction) {
-    const targetLabel = sessionAction === 'endSession' ? 'End Session' : 'Start Session';
-    const targetRunningState = sessionAction === 'startSession';
-    const deadline = Date.now() + ACTION_TIMEOUT_MS;
-
-    while (Date.now() < deadline) {
-      this.syncFromWebsiteState();
-
-      if (sessionAction === 'startSession' && this.sessionActive) {
-        return true;
-      }
-
-      if (sessionAction === 'endSession' && !this.sessionActive) {
-        return true;
-      }
-
-      const button = this.findButtonByText(targetLabel);
-      if (button && !button.disabled) {
-        button.click();
-        await this.wait(250);
-
-        if (targetRunningState === this.sessionActive || sessionAction === 'endSession') {
-          return true;
-        }
-      } else {
-        await this.wait(250);
-      }
-    }
-
-    return false;
-  }
-
-  findButtonByText(targetLabel) {
-    return Array.from(document.querySelectorAll('button')).find((button) => {
-      const text = button.textContent?.replace(/\s+/g, ' ').trim();
-      return text === targetLabel;
-    }) ?? null;
-  }
-
-  wait(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
 

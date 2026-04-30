@@ -33,7 +33,15 @@ if (!['http:', 'https:'].includes(app.protocol) || !['http:', 'https:'].includes
 
 const normalizedAppBase = app.origin;
 const normalizedApiBase = api.origin;
-const appUrlPattern = `${normalizedAppBase}/*`;
+
+// Create a more inclusive pattern for content scripts
+// If it's localhost, also include 127.0.0.1 automatically
+let appUrlPatterns = [`${normalizedAppBase}/*`];
+if (normalizedAppBase.includes('localhost')) {
+  appUrlPatterns.push(normalizedAppBase.replace('localhost', '127.0.0.1') + '/*');
+} else if (normalizedAppBase.includes('127.0.0.1')) {
+  appUrlPatterns.push(normalizedAppBase.replace('127.0.0.1', 'localhost') + '/*');
+}
 
 fs.rmSync(outDir, { recursive: true, force: true });
 fs.mkdirSync(outDir, { recursive: true });
@@ -41,7 +49,13 @@ fs.mkdirSync(outDir, { recursive: true });
 function copyDir(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    if (entry.name === 'dist' || entry.name === 'manifest.template.json' || entry.name === 'scripts_build_extension.mjs') continue;
+    if (
+      entry.name === 'dist' || 
+      entry.name === 'manifest.template.json' || 
+      entry.name === 'scripts_build_extension.mjs' ||
+      entry.name === 'chrome-extension' ||
+      entry.name === '.env'
+    ) continue;
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
     if (entry.isDirectory()) {
@@ -54,10 +68,36 @@ function copyDir(src, dest) {
 
 copyDir(root, outDir);
 
+// Prepend polyfill to JavaScript files that use chrome APIs
+const polyfillCode = `
+// WebExtensions polyfill - enables cross-browser compatibility
+// Works in both window context (popup/content) and service worker context (background)
+const getGlobal = () => {
+  if (typeof globalThis !== 'undefined') return globalThis;
+  if (typeof window !== 'undefined') return window;
+  if (typeof global !== 'undefined') return global;
+  if (typeof self !== 'undefined') return self;
+  return {};
+};
+const globalObj = getGlobal();
+if (typeof globalObj.browser === 'undefined' && typeof globalObj.chrome !== 'undefined') {
+  globalObj.browser = globalObj.chrome;
+} else if (typeof globalObj.browser !== 'undefined' && typeof globalObj.chrome === 'undefined') {
+  globalObj.chrome = globalObj.browser;
+}
+`;
+
+const jsFilesToPolyfill = [
+  'background.js',
+  'content.js',
+  'popup.js',
+  'monitor.js',
+  'guest-analytics.js'
+];
+
 const replacements = [
   ['__APP_BASE_URL__', normalizedAppBase],
   ['__API_BASE_URL__', normalizedApiBase],
-  ['__APP_URL_PATTERN__', appUrlPattern],
 ];
 
 function replaceInFile(filePath) {
@@ -66,19 +106,68 @@ function replaceInFile(filePath) {
   for (const [from, to] of replacements) {
     content = content.split(from).join(to);
   }
+  
+  // Prepend polyfill to extension JavaScript files
+  const fileName = path.basename(filePath);
+  if (jsFilesToPolyfill.includes(fileName) && !content.startsWith('// WebExtensions polyfill')) {
+    // If it has imports at the top, we must put polyfill AFTER them
+    const lines = content.split('\n');
+    let lastImportIndex = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim().startsWith('import ')) {
+        lastImportIndex = i;
+      } else if (lines[i].trim() === '' || lines[i].trim().startsWith('//') || lines[i].trim().startsWith('/*')) {
+        // Skip whitespace/comments
+        continue;
+      } else {
+        break;
+      }
+    }
+    
+    if (lastImportIndex !== -1) {
+      const imports = lines.slice(0, lastImportIndex + 1);
+      const rest = lines.slice(lastImportIndex + 1);
+      content = imports.join('\n') + '\n\n' + polyfillCode + '\n' + rest.join('\n');
+    } else {
+      content = polyfillCode + content;
+    }
+  }
+  
   fs.writeFileSync(filePath, content);
 }
 
+const targetBrowser = process.env.EXTENSION_BROWSER || 'chrome';
+
 const manifestTemplatePath = path.join(root, 'manifest.template.json');
-let manifest = fs.readFileSync(manifestTemplatePath, 'utf8');
-for (const [from, to] of replacements) {
-  manifest = manifest.split(from).join(to);
+let manifestContent = fs.readFileSync(manifestTemplatePath, 'utf8');
+
+// Handle multiple patterns in manifest if needed
+if (manifestContent.includes('"__APP_URL_PATTERN__"')) {
+  manifestContent = manifestContent.replace('"__APP_URL_PATTERN__"', appUrlPatterns.map(p => `"${p}"`).join(', '));
 }
-fs.writeFileSync(path.join(outDir, 'manifest.json'), manifest);
 
-replaceInFile(path.join(outDir, 'popup.js'));
-replaceInFile(path.join(outDir, 'background.js'));
+for (const [from, to] of replacements) {
+  manifestContent = manifestContent.split(from).join(to);
+}
 
-console.log('Extension build complete:', outDir);
+const manifest = JSON.parse(manifestContent);
+
+// Firefox-specific Manifest V3 adjustments
+if (targetBrowser === 'firefox') {
+  if (manifest.background && manifest.background.service_worker) {
+    const swScript = manifest.background.service_worker;
+    delete manifest.background.service_worker;
+    manifest.background.scripts = [swScript];
+  }
+}
+
+fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+
+// Process all JS files
+jsFilesToPolyfill.forEach(file => {
+  replaceInFile(path.join(outDir, file));
+});
+
+console.log(`Extension build complete (${targetBrowser}):`, outDir);
 console.log('APP_BASE_URL=', normalizedAppBase);
 console.log('API_BASE_URL=', normalizedApiBase);

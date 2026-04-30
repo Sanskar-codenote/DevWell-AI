@@ -3,6 +3,10 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "build": "node scripts_build_extension.mjs"
+    "build": "node scripts_build_extension.mjs",
+    "build:firefox": "EXTENSION_BROWSER=firefox node scripts_build_extension.mjs"
+  },
+  "dependencies": {
+    "webextension-polyfill": "^0.10.0"
   }
 }
