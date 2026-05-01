@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const root = path.resolve('.');
-const outDir = path.join(root, 'dist');
+const targetBrowser = process.env.EXTENSION_BROWSER || 'chrome';
+const outDir = path.join(root, targetBrowser === 'firefox' ? 'dist-firefox' : 'dist');
 
 // Load .env if exists
 const envPath = path.join(root, '.env');
@@ -54,7 +55,9 @@ function copyDir(src, dest) {
       entry.name === 'manifest.template.json' || 
       entry.name === 'scripts_build_extension.mjs' ||
       entry.name === 'chrome-extension' ||
-      entry.name === '.env'
+      entry.name === '.env' ||
+      entry.name === '.env.example' ||
+      entry.name === path.basename(outDir)
     ) continue;
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
@@ -135,8 +138,6 @@ function replaceInFile(filePath) {
   
   fs.writeFileSync(filePath, content);
 }
-
-const targetBrowser = process.env.EXTENSION_BROWSER || 'chrome';
 
 const manifestTemplatePath = path.join(root, 'manifest.template.json');
 let manifestContent = fs.readFileSync(manifestTemplatePath, 'utf8');
