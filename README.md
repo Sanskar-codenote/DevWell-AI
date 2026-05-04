@@ -46,9 +46,14 @@ DevWell is a **privacy-first developer wellness platform** that monitors eye bli
 - **Browser Notifications**: Real-time alerts for fatigue thresholds
 - **Guest Mode**: Local-only monitoring without account creation
 
+### Browser Support
+- **Google Chrome** (Manifest V3)
+- **Mozilla Firefox** (Manifest V3 compatible, auto-polyfilled)
+
 ### Technical Features
 - **Multi-tab Synchronization**: Single-owner model with follower tabs mirroring state
-- **Background Tab Support**: Continuous monitoring using `ImageCapture` API
+- **Robust Background Tab Support**: Continuous monitoring using `ImageCapture` API and `MediaStreamTrackProcessor`, specifically optimized to bypass browser throttling and maintain high-fidelity tracking even when tabs are hidden.
+- **Sparse Frame Detection**: Advanced heuristics accurately classify blinks vs. drowsiness even when camera frames drop to 1-2 FPS.
 - **Extension-Website Bridge**: Seamless state synchronization
 - **Account Mismatch Protection**: Prevents conflicts between different user sessions
 
@@ -192,7 +197,7 @@ npm run dev
 
 Access at: `http://localhost:5173`
 
-#### 5. Load Chrome Extension (Optional)
+#### 5. Load Extension (Chrome & Firefox)
 
 Create `chrome-extension/.env`:
 
@@ -201,19 +206,25 @@ APP_BASE_URL=http://localhost:5173
 API_BASE_URL=http://localhost:3001
 ```
 
-Build and load:
+Build for all supported browsers:
 
 ```bash
 cd chrome-extension
-npm run build
+npm run build:all
 ```
+This generates two output directories: `dist/` (for Chrome) and `dist-firefox/` (for Firefox).
 
-In Chrome:
+**In Chrome:**
 1. Open `chrome://extensions`
 2. Enable **Developer mode**
 3. Click **Load unpacked**
 4. Select `chrome-extension/dist/`
 5. **Pin** the extension
+
+**In Firefox:**
+1. Open `about:debugging#/runtime/this-firefox`
+2. Click **Load Temporary Add-on...**
+3. Select any file inside `chrome-extension/dist-firefox/`
 
 ---
 
