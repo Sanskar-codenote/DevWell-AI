@@ -22,13 +22,10 @@ A Manifest V3 Chrome extension that provides real-time developer wellness monito
     ```bash
     npm install
     
-    # For Chrome/Edge/Brave
-    npm run build
-    
-    # For Firefox
-    npm run build:firefox
+    # Build for all supported browsers
+    npm run build:all
     ```
-    This generates the final extension files in the `dist/` directory.
+    This generates two output directories: `dist/` (for Chrome) and `dist-firefox/` (for Firefox).
 
 3.  **Load into Browser**:
     - **Chrome**:
@@ -40,7 +37,7 @@ A Manifest V3 Chrome extension that provides real-time developer wellness monito
       - Open `about:debugging`.
       - Click **This Firefox**.
       - Click **Load Temporary Add-on...**.
-      - Select the **`manifest.json`** inside **`chrome-extension/dist/`**.
+      - Select the **`manifest.json`** inside **`chrome-extension/dist-firefox/`**.
 
 4.  **Usage**:
     - Pin the extension for easy access.
