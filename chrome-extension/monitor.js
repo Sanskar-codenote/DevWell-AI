@@ -9,8 +9,10 @@ const BLINK_REFRACTORY_MS = 80;
 const REOPEN_STABILITY_MS = 90;
 const HIDDEN_READER_TIMEOUT_MS = 280;
 const HIDDEN_GRAB_TIMEOUT_MS = 280;
-const HIDDEN_LOOP_INTERVAL_MS = 250; 
+const HIDDEN_LOOP_INTERVAL_MS = 150; 
 const VISIBLE_FRAME_INTERVAL_MS = 100;
+const UNKNOWN_FRAME_RESET_MS = 2500;
+const BACKGROUND_SPARSE_GAP_MS = 700;
 
 let sessionActive = false;
 let isStarting = false;
@@ -30,7 +32,10 @@ let rafId = null;
 let imageCapture = null;
 let hiddenFrameReader = null;
 let hiddenFrameLoopActive = false;
-let isTabVisible = true;
+let isTabVisible = document.visibilityState === 'visible';
+let unknownStateStartAt = 0;
+let lastResultAt = 0;
+let closureSampleCount = 0;
 const processingCanvas = document.createElement('canvas');
 const processingCtx = processingCanvas.getContext('2d', { willReadFrequently: true });
 processingCanvas.width = 640;
@@ -116,6 +121,9 @@ function resetSessionCounters() {
   openStateStartAt = 0;
   earThreshold = DEFAULT_EAR_THRESHOLD;
   earCalibrationSamples = [];
+  unknownStateStartAt = 0;
+  lastResultAt = 0;
+  closureSampleCount = 0;
 }
 
 function clearFrameLoopHandles() {
@@ -208,9 +216,14 @@ async function runHiddenFrameLoop() {
         detected = true;
       }
 
-      const processingTime = performance.now() - loopStart;
-      const delay = Math.max(10, HIDDEN_LOOP_INTERVAL_MS - processingTime);
-      await new Promise(resolve => setTimeout(resolve, delay));
+      if (!detected) {
+        const processingTime = performance.now() - loopStart;
+        const delay = Math.max(10, HIDDEN_LOOP_INTERVAL_MS - processingTime);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        // Yield to let other async tasks run
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
     }
   } finally {
     hiddenFrameLoopActive = false;
@@ -276,8 +289,36 @@ async function startSession() {
   }
 }
 
+function handleUnknownTrackingFrame(now) {
+  if (!eyesClosed) return;
+  if (unknownStateStartAt === 0) unknownStateStartAt = now;
+
+  const isBackground = !isTabVisible;
+  if (isBackground && (now - unknownStateStartAt < UNKNOWN_FRAME_RESET_MS)) return;
+
+  const closedDuration = now - eyeClosedStart;
+  if (closedDuration >= DROWSINESS_THRESHOLD_MS) {
+    longClosureEvents += 1;
+  }
+
+  if (now - unknownStateStartAt >= UNKNOWN_FRAME_RESET_MS) {
+    eyesClosed = false;
+    eyeClosedStart = 0;
+    unknownStateStartAt = 0;
+    closureSampleCount = 0;
+  }
+}
+
 function onFaceLandmarkerResults(results) {
-  if (!sessionActive || !results?.faceLandmarks || results.faceLandmarks.length === 0) return;
+  const now = Date.now();
+  if (!sessionActive || !results?.faceLandmarks || results.faceLandmarks.length === 0) {
+    handleUnknownTrackingFrame(now);
+    return;
+  }
+
+  unknownStateStartAt = 0;
+  const frameGap = lastResultAt > 0 ? now - lastResultAt : 0;
+  lastResultAt = now;
 
   const landmarks = results.faceLandmarks[0];
   const avgEAR = (computeEAR(landmarks, LEFT_EYE) + computeEAR(landmarks, RIGHT_EYE)) / 2;
@@ -286,24 +327,39 @@ function onFaceLandmarkerResults(results) {
     updateEARCalibration(avgEAR);
   }
 
-  const now = Date.now();
   const eyesCurrentlyClosed = avgEAR < earThreshold;
+  const isBackground = !isTabVisible;
 
   if (eyesCurrentlyClosed) {
     openStateStartAt = 0;
     if (!eyesClosed) {
       eyesClosed = true;
       eyeClosedStart = now;
+      closureSampleCount = 1;
+    } else {
+      closureSampleCount += 1;
     }
   } else if (!eyesCurrentlyClosed && eyesClosed) {
     if (openStateStartAt === 0) openStateStartAt = now;
-    const isBackground = !isTabVisible;
     const stableEnough = (now - openStateStartAt >= REOPEN_STABILITY_MS) || isBackground;
     
     if (stableEnough) {
       const closedDuration = now - eyeClosedStart;
-      if (closedDuration >= DROWSINESS_THRESHOLD_MS) longClosureEvents += 1;
-      else if (closedDuration >= BLINK_MIN_MS) {
+      
+      const sparseBackgroundClosure = isBackground && 
+        closedDuration >= DROWSINESS_THRESHOLD_MS && 
+        closureSampleCount <= 2 && 
+        frameGap >= BACKGROUND_SPARSE_GAP_MS;
+
+      if (sparseBackgroundClosure) {
+        if (now - lastBlinkTime >= BLINK_REFRACTORY_MS) {
+          blinkCount += 1;
+          blinkHistory.push(now);
+          lastBlinkTime = now;
+        }
+      } else if (closedDuration >= DROWSINESS_THRESHOLD_MS) {
+        longClosureEvents += 1;
+      } else if (closedDuration >= BLINK_MIN_MS) {
         if (now - lastBlinkTime >= BLINK_REFRACTORY_MS) {
           blinkCount += 1;
           blinkHistory.push(now);
@@ -311,6 +367,8 @@ function onFaceLandmarkerResults(results) {
         }
       }
       eyesClosed = false;
+      closureSampleCount = 0;
+      openStateStartAt = 0;
     }
   }
 }

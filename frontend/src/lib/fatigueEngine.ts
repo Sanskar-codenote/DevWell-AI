@@ -161,7 +161,7 @@ export class FatigueEngine {
   private backgroundFallbackId: number | null = null; // For background tab processing
   private hiddenFrameLoopActive = false;
   private running = false;
-  private isTabVisible = true; // Track tab visibility
+  private isTabVisible = typeof document !== 'undefined' ? document.visibilityState === 'visible' : true; 
   private wakeLock: WakeLockSentinel | null = null; // Keep screen awake
   private lastFatigueAlertAt = 0;
   private earThreshold = DEFAULT_EAR_THRESHOLD;
