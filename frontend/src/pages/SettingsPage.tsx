@@ -135,7 +135,7 @@ export default function SettingsPage() {
             action: 'syncWebsiteSettings',
             settings: settings
           });
-        } catch (error) {
+        } catch {
           // Handled by DOM bridge
         }
       }

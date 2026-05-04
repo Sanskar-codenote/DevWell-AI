@@ -47,6 +47,7 @@ interface HiddenTrackReader {
   releaseLock?: () => void;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface FilesetResolverInstance {}
 
 interface FilesetResolverStatic {
