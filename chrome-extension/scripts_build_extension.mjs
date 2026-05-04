@@ -173,6 +173,9 @@ if (targetBrowser === 'firefox') {
     delete manifest.background.service_worker;
     manifest.background.scripts = [swScript];
   }
+} else {
+  // Remove Firefox-specific keys for Chrome build
+  delete manifest.browser_specific_settings;
 }
 
 fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
