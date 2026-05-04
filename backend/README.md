@@ -35,11 +35,6 @@ The backend service for DevWell AI, providing authentication, session management
     npm start
     ```
 
-4.  **Seed data (optional)**:
-    ```bash
-    npm run seed
-    ```
-
 ## Environment Variables
 
 | Variable | Description | Default |

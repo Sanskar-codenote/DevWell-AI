@@ -117,12 +117,6 @@ export default function LoginPage() {
               Sign up
             </Link>
           </p>
-
-          <div className="mt-8 p-3 bg-white/5 rounded-xl border border-white/5">
-            <p className="text-xs text-slate-500 text-center">
-              Demo: <span className="text-slate-400">demo@devwell.ai</span> / <span className="text-slate-400">demo123</span>
-            </p>
-          </div>
         </div>
       </div>
     </div>
