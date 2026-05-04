@@ -51,6 +51,7 @@ Thumbs.db
 
 # Build output
 dist/
+dist-firefox/
 build/
 .out/
 

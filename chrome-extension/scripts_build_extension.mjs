@@ -1,20 +1,27 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = path.resolve('.');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Always set root to the chrome-extension directory
+const root = __dirname;
 const targetBrowser = process.env.EXTENSION_BROWSER || 'chrome';
 const outDir = path.join(root, targetBrowser === 'firefox' ? 'dist-firefox' : 'dist');
 
-// Load .env if exists
-const envPath = path.join(root, '.env');
-if (fs.existsSync(envPath)) {
-  const envContent = fs.readFileSync(envPath, 'utf8');
-  envContent.split('\n').forEach(line => {
-    const [key, ...valueParts] = line.split('=');
-    if (key && valueParts.length > 0) {
-      process.env[key.trim()] = valueParts.join('=').trim();
-    }
-  });
+// Load .env if exists in root or workspace root
+const envPaths = [path.join(root, '.env'), path.join(root, '..', '.env')];
+for (const envPath of envPaths) {
+  if (fs.existsSync(envPath)) {
+    const envContent = fs.readFileSync(envPath, 'utf8');
+    envContent.split('\n').forEach(line => {
+      const [key, ...valueParts] = line.split('=');
+      if (key && valueParts.length > 0) {
+        process.env[key.trim()] = valueParts.join('=').trim();
+      }
+    });
+  }
 }
 
 const appBaseUrl = process.env.APP_BASE_URL;
@@ -36,7 +43,6 @@ const normalizedAppBase = app.origin;
 const normalizedApiBase = api.origin;
 
 // Create a more inclusive pattern for content scripts
-// If it's localhost, also include 127.0.0.1 automatically
 let appUrlPatterns = [`${normalizedAppBase}/*`];
 if (normalizedAppBase.includes('localhost')) {
   appUrlPatterns.push(normalizedAppBase.replace('localhost', '127.0.0.1') + '/*');
@@ -52,15 +58,22 @@ function copyDir(src, dest) {
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     if (
       entry.name === 'dist' || 
+      entry.name === 'dist-firefox' || 
       entry.name === 'manifest.template.json' || 
       entry.name === 'scripts_build_extension.mjs' ||
       entry.name === 'chrome-extension' ||
       entry.name === '.env' ||
-      entry.name === '.env.example' ||
-      entry.name === path.basename(outDir)
+      entry.name === '.env.example'
     ) continue;
+    
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
+    
+    // Prevent recursive copying of output directories
+    if (srcPath === path.join(root, 'dist') || srcPath === path.join(root, 'dist-firefox')) {
+      continue;
+    }
+
     if (entry.isDirectory()) {
       copyDir(srcPath, destPath);
     } else {
