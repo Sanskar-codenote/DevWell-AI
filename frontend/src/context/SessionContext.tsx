@@ -17,6 +17,18 @@ const TAB_ID_KEY = 'devwell_tab_id';
 const OWNER_STALE_MS = 6000;
 const EXTENSION_PING_MS = 1000;
 
+function getInitialLowBlinkRate(): number {
+  if (typeof localStorage === 'undefined') return 15;
+  try {
+    const raw = localStorage.getItem('userSettings');
+    if (!raw) return 15;
+    const parsed = JSON.parse(raw);
+    return Number(parsed.lowBlinkRate || 15);
+  } catch {
+    return 15;
+  }
+}
+
 const defaultState: FatigueState = {
   blinkCount: 0,
   currentBlinkRate: 0,
@@ -28,6 +40,11 @@ const defaultState: FatigueState = {
   eyesOpen: true,
   sessionDurationMinutes: 0,
   isRunning: false,
+  isPaused: false,
+  isAutoPaused: false,
+  faceDetected: false,
+  cameraStatus: 'inactive',
+  lowBlinkRate: getInitialLowBlinkRate(),
 };
 
 interface Alert {
@@ -66,6 +83,8 @@ interface SessionContextType {
   extensionAuthMismatch: string | null;
   startSession: (visibleVideoEl?: HTMLVideoElement) => Promise<void>;
   stopSession: () => Promise<void>;
+  pauseSession: () => void;
+  resumeSession: () => Promise<void>;
   dismissAlert: (id: number) => void;
   clearSummary: () => void;
 }
@@ -145,6 +164,26 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  // Sync settings from localStorage to state periodically when not running
+  useEffect(() => {
+    if (state.isRunning || extensionAvailable) return;
+
+    const syncSettings = () => {
+      const currentLowBlinkRate = getInitialLowBlinkRate();
+      if (currentLowBlinkRate !== state.lowBlinkRate) {
+        setState(prev => ({ ...prev, lowBlinkRate: currentLowBlinkRate }));
+      }
+    };
+
+    const intervalId = window.setInterval(syncSettings, 2000);
+    window.addEventListener('focus', syncSettings);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', syncSettings);
+    };
+  }, [state.isRunning, state.lowBlinkRate, extensionAvailable]);
 
   // Clean up orphaned streams on mount (page reload)
   useEffect(() => {
@@ -350,6 +389,34 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setSaving(false);
     }
   }, [handleAlert, releaseOwnership]);
+
+  const pauseSession = useCallback(() => {
+    if (extensionAvailable) {
+      if (extensionCommandInFlightRef.current) return;
+      document.documentElement.setAttribute(
+        EXTENSION_COMMAND_ATTRIBUTE,
+        JSON.stringify({ type: 'pause', requestedAt: Date.now() })
+      );
+      return;
+    }
+    if (isSessionOwner && engineRef.current) {
+      engineRef.current.pause();
+    }
+  }, [extensionAvailable, isSessionOwner]);
+
+  const resumeSession = useCallback(async () => {
+    if (extensionAvailable) {
+      if (extensionCommandInFlightRef.current) return;
+      document.documentElement.setAttribute(
+        EXTENSION_COMMAND_ATTRIBUTE,
+        JSON.stringify({ type: 'resume', requestedAt: Date.now() })
+      );
+      return;
+    }
+    if (isSessionOwner && engineRef.current) {
+      await engineRef.current.resume();
+    }
+  }, [extensionAvailable, isSessionOwner]);
 
   const syncFromSharedSnapshot = useCallback(() => {
     const snapshot = readJson<SharedSessionSnapshot>(SHARED_SESSION_KEY);
@@ -681,6 +748,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       extensionAuthMismatch: extensionAuthMismatch(),
       startSession,
       stopSession,
+      pauseSession,
+      resumeSession,
       dismissAlert,
       clearSummary,
     }}>

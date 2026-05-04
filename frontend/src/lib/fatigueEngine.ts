@@ -9,6 +9,12 @@ export interface FatigueState {
   eyesOpen: boolean;
   sessionDurationMinutes: number;
   isRunning: boolean;
+  isPaused: boolean;
+  isAutoPaused: boolean;
+
+  faceDetected: boolean;
+  cameraStatus: 'active' | 'inactive' | 'covered';
+  lowBlinkRate: number;
 }
 
 export interface SessionSummary extends FatigueState {
@@ -82,7 +88,7 @@ function loadVisionBundle(): Promise<VisionBundleModule> {
 
 type FatigueCallback = (state: FatigueState) => void;
 type AlertCallback = (
-  type: 'blink_rate' | 'break' | 'fatigue_moderate' | 'fatigue_high',
+  type: 'blink_rate' | 'break' | 'fatigue_moderate' | 'fatigue_high' | 'info' | 'error',
   message: string
 ) => void;
 
@@ -108,7 +114,7 @@ const EAR_OPEN_FRACTION = 0.68; // Eye-closed threshold as a fraction of calibra
 const BLINK_MIN_MS = 50;
 const DROWSINESS_THRESHOLD_MS = 1500;
 const BLINK_REFRACTORY_MS = 80;
-const LOW_BLINK_RATE = 8;
+const DEFAULT_LOW_BLINK_RATE = 15;
 const BREAK_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
 const MAX_EYE_ASYMMETRY_RATIO = 1.8;
 const MIN_VALID_EYE_WIDTH = 0.018;
@@ -120,6 +126,7 @@ const HIDDEN_LOOP_BACKOFF_MS = 40;
 const BACKGROUND_DROWSY_MIN_CLOSED_SAMPLES = 3;
 const BACKGROUND_SPARSE_GAP_MS = 700;
 const VISIBLE_FRAME_INTERVAL_MS = 66; // ~15 FPS
+const AUTO_PAUSE_THRESHOLD_MS = 20000; // 20 seconds of no face = auto-pause
 
 interface NotificationSettings {
   lowFatigueThreshold: number;
@@ -128,6 +135,7 @@ interface NotificationSettings {
   enableModerateFatigueNotification: boolean;
   enableHighFatigueNotification: boolean;
   enableBreakNotification: boolean;
+  lowBlinkRate: number;
 }
 
 function getDefaultNotificationSettings(): NotificationSettings {
@@ -138,6 +146,7 @@ function getDefaultNotificationSettings(): NotificationSettings {
     enableModerateFatigueNotification: true,
     enableHighFatigueNotification: true,
     enableBreakNotification: true,
+    lowBlinkRate: DEFAULT_LOW_BLINK_RATE,
   };
 }
 
@@ -156,12 +165,20 @@ export class FatigueEngine {
   private sessionAvgBlinkRate = 0;
   private blinkHistory: number[] = [];
   private sessionStart = 0;
+  private totalPausedTime = 0;
+  private pauseStartAt = 0;
   private lastBreakAlert = 0;
   private animationFrameId: number | null = null;
   private heartbeatIntervalId: number | null = null;
   private backgroundFallbackId: number | null = null; // For background tab processing
   private hiddenFrameLoopActive = false;
   private running = false;
+  private isPaused = false;
+  private isAutoPaused = false;
+
+  private faceDetected = false;
+  private cameraStatus: FatigueState['cameraStatus'] = 'inactive';
+  private lastFaceDetectedAt = 0;
   private isTabVisible = typeof document !== 'undefined' ? document.visibilityState === 'visible' : true; 
   private wakeLock: WakeLockSentinel | null = null; // Keep screen awake
   private lastFatigueAlertAt = 0;
@@ -196,7 +213,7 @@ export class FatigueEngine {
 
         if (this.isTabVisible) {
           console.log('[DevWell] Tab is now visible, resuming normal processing');
-          if (this.running) {
+          if (this.running && !this.isPaused) {
             void this.requestWakeLock();
           }
         } else {
@@ -208,6 +225,48 @@ export class FatigueEngine {
         }
       });
     }
+  }
+
+  public pause(isAuto: boolean = false): void {
+    if (!this.running || this.isPaused) return;
+    this.isPaused = true;
+    this.isAutoPaused = isAuto;
+    this.pauseStartAt = Date.now();
+    this.releaseWakeLock();
+    if (!isAuto) {
+      this.stopCamera();
+      this.onAlert('info', 'Session paused. Camera turned off.');
+    } else {
+      this.onAlert('info', 'No face detected. Session auto-paused.');
+    }
+    this.emitState();
+  }
+
+  public async resume(): Promise<void> {
+    if (!this.running || !this.isPaused) return;
+    const wasAutoPaused = this.isAutoPaused;
+    this.isPaused = false;
+    this.isAutoPaused = false;
+
+    if (!wasAutoPaused) {
+      try {
+        await this.startCamera();
+      } catch (err) {
+        this.onAlert('error', 'Failed to restart camera.');
+        this.pause(false);
+        return;
+      }
+    }
+
+    if (this.pauseStartAt > 0) {
+      this.totalPausedTime += Date.now() - this.pauseStartAt;
+      this.pauseStartAt = 0;
+    }
+    if (this.isTabVisible) {
+      void this.requestWakeLock();
+    }
+    this.onAlert('info', 'Session resumed.');
+    this.emitState();
   }
 
   private async requestWakeLock(): Promise<void> {
@@ -266,6 +325,7 @@ export class FatigueEngine {
   }
 
   private checkBreakReminder(now: number): void {
+    if (this.isPaused) return;
     const settings = this.getNotificationSettings();
     if (!settings.enableBreakNotification) return;
     if (now - this.lastBreakAlert >= BREAK_INTERVAL_MS) {
@@ -288,6 +348,7 @@ export class FatigueEngine {
       const fatigueNotificationIntervalMinutes = Number(
         parsed.fatigueNotificationIntervalMinutes ?? defaults.fatigueNotificationIntervalMinutes
       );
+      const lowBlinkRate = Number(parsed.lowBlinkRate ?? defaults.lowBlinkRate);
 
       return {
         lowFatigueThreshold: Number.isFinite(lowFatigueThreshold) ? lowFatigueThreshold : defaults.lowFatigueThreshold,
@@ -298,6 +359,7 @@ export class FatigueEngine {
         enableModerateFatigueNotification: parsed.enableModerateFatigueNotification !== false,
         enableHighFatigueNotification: parsed.enableHighFatigueNotification !== false,
         enableBreakNotification: parsed.enableBreakNotification ?? parsed.enable20MinNotification ?? true,
+        lowBlinkRate: Number.isFinite(lowBlinkRate) ? lowBlinkRate : defaults.lowBlinkRate,
       };
     } catch {
       return defaults;
@@ -507,6 +569,13 @@ export class FatigueEngine {
       }
       
       this.running = true;
+      this.isPaused = false;
+      this.isAutoPaused = false;
+      this.totalPausedTime = 0;
+      this.pauseStartAt = 0;
+      this.faceDetected = false;
+      this.cameraStatus = 'active';
+      this.lastFaceDetectedAt = Date.now();
       this.earThreshold = DEFAULT_EAR_THRESHOLD;
       this.openEARBaseline = 0;
       this.earCalibrationSamples = [];
@@ -535,16 +604,7 @@ export class FatigueEngine {
         outputFaceBlendshapes: true,
       });
 
-      // Start camera
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: 'user' },
-      });
-      this.cameraStream = stream;
-      videoElement.srcObject = stream;
-      this.hiddenTrackReader = this.createHiddenTrackReader(stream);
-      this.imageCapture = this.createImageCapture(stream);
-      
-      await videoElement.play();
+      await this.startCamera();
 
       // Request wake lock to keep the tab active
       await this.requestWakeLock();
@@ -557,6 +617,33 @@ export class FatigueEngine {
     }
   }
 
+  private async startCamera(): Promise<void> {
+    if (!this.videoElement) return;
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480, facingMode: 'user' },
+    });
+    this.cameraStream = stream;
+    this.videoElement.srcObject = stream;
+    this.hiddenTrackReader = this.createHiddenTrackReader(stream);
+    this.imageCapture = this.createImageCapture(stream);
+    this.cameraStatus = 'active';
+    await this.videoElement.play();
+  }
+
+  private stopCamera(): void {
+    if (this.cameraStream) {
+      this.cameraStream.getTracks().forEach(t => t.stop());
+      this.cameraStream = null;
+    } else if (this.videoElement?.srcObject) {
+      (this.videoElement.srcObject as MediaStream).getTracks().forEach(track => track.stop());
+    }
+    if (this.videoElement) {
+      this.videoElement.srcObject = null;
+    }
+    this.closeHiddenTrackReader();
+    this.imageCapture = null;
+    this.cameraStatus = 'inactive';
+  }
   private startHeartbeat(): void {
     if (this.heartbeatIntervalId) {
       clearInterval(this.heartbeatIntervalId);
@@ -591,6 +678,9 @@ export class FatigueEngine {
       } else {
         this.runDetection(this.videoElement);
       }
+    } else if (this.videoElement && this.videoElement.readyState === 0) {
+      // Camera might be off or covered if stream is attached but no frames
+      this.handleUnknownTrackingFrame(Date.now());
     }
 
     this.checkBreakReminder(Date.now());
@@ -598,8 +688,27 @@ export class FatigueEngine {
   }
 
   private processResults(results: FaceLandmarkerResults): void {
+    const now = Date.now();
+    
     if (!results.faceLandmarks || results.faceLandmarks.length === 0) {
-      this.handleUnknownTrackingFrame(Date.now());
+      this.faceDetected = false;
+      this.handleUnknownTrackingFrame(now);
+      this.emitState();
+      return;
+    }
+
+    // Face detected
+    this.faceDetected = true;
+    this.lastFaceDetectedAt = now;
+    this.cameraStatus = 'active';
+
+    // Auto-resume if it was auto-paused
+    if (this.isPaused && this.isAutoPaused) {
+      this.resume();
+      this.onAlert('info', 'Face detected. Resuming session.');
+    }
+
+    if (this.isPaused) {
       this.emitState();
       return;
     }
@@ -623,24 +732,18 @@ export class FatigueEngine {
     const eyeAsymmetryRatio = maxEyeWidth / Math.max(minEyeWidth, 1e-6);
     const unreliablePose = minEyeWidth < MIN_VALID_EYE_WIDTH || eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO;
     if (unreliablePose) {
-      this.handleUnknownTrackingFrame(Date.now());
+      this.handleUnknownTrackingFrame(now);
       this.emitState();
       return;
     }
     this.unknownStateStartAt = 0;
 
-    const now = Date.now();
     const frameGap = this.lastResultAt > 0 ? now - this.lastResultAt : 0;
     this.lastResultAt = now;
     const isBackground = !this.isTabVisible;
     const eyesCurrentlyClosed =
       avgEAR < this.earThreshold &&
       Math.max(leftEAR, rightEAR) < this.earThreshold * 1.08;
-
-    // Log EAR values to help debug
-    if (this.blinkCount % 10 === 0 || !this.eyesClosed !== !eyesCurrentlyClosed) {
-      console.log(`[EAR] Avg: ${avgEAR.toFixed(3)}, Threshold: ${this.earThreshold.toFixed(3)}, Closed: ${eyesCurrentlyClosed}`);
-    }
 
     if (eyesCurrentlyClosed) {
       this.openStateStartAt = 0;
@@ -683,10 +786,8 @@ export class FatigueEngine {
         }
 
         // Stability period passed, classify the closure event
-        // Use 'now' to get the actual total closure duration
         const closureDuration = now - this.eyeClosedStart;
-        console.log(`[Blink] Classifying closure: ${closureDuration}ms (threshold: ${BLINK_MIN_MS}-${DROWSINESS_THRESHOLD_MS}ms)`);
-
+        
         const sparseBackgroundClosure =
           isBackground &&
           closureDuration >= DROWSINESS_THRESHOLD_MS &&
@@ -698,16 +799,11 @@ export class FatigueEngine {
             this.blinkCount++;
             this.blinkHistory.push(now);
             this.lastBlinkAt = now;
-            console.log(
-              `[Blink] ✓ Background sparse closure treated as blink. Count: ${this.blinkCount}, Duration: ${closureDuration}ms`
-            );
           }
         } else if (closureDuration >= DROWSINESS_THRESHOLD_MS) {
-          // Long closures are drowsiness events and must never be counted as blinks.
           if (!this.drowsinessCountedForCurrentClosure) {
             this.longClosureEvents++;
             this.drowsinessCountedForCurrentClosure = true;
-            console.log(`[Drowsy] Long closure detected: ${closureDuration}ms`);
           }
         } else if (
           closureDuration >= BLINK_MIN_MS &&
@@ -718,9 +814,6 @@ export class FatigueEngine {
           this.blinkCount++;
           this.blinkHistory.push(now);
           this.lastBlinkAt = now;
-          console.log(`[Blink] ✓ Detected! Count: ${this.blinkCount}, Duration: ${closureDuration}ms`);
-        } else {
-          console.log(`[Blink] ✗ Not counted - Duration: ${closureDuration}ms, Since last blink: ${now - this.lastBlinkAt}ms`);
         }
         
         // Reset closure tracking after classification
@@ -730,22 +823,11 @@ export class FatigueEngine {
     }
 
     // Current blink rate: rolling last 60 seconds.
-    const sessionMinutes = (now - this.sessionStart) / 60000;
     const oneMinuteAgo = now - 60000;
     this.blinkHistory = this.blinkHistory.filter(t => t > oneMinuteAgo);
     this.currentBlinkRate = this.blinkHistory.length;
 
-    // Session average blink rate: smoothed denominator in first minute to avoid spikes.
-    const normalizedMinutes = Math.max(sessionMinutes, 1);
-    this.sessionAvgBlinkRate = sessionMinutes > 0
-      ? Math.round(this.blinkCount / normalizedMinutes)
-      : 0;
-
-    // Low blink rate alert
-    if (sessionMinutes > 1 && this.currentBlinkRate < LOW_BLINK_RATE && this.currentBlinkRate > 0) {
-      // Only alert once per minute
-    }
-
+    // Session average blink rate calculation moved to emitState for accurate paused time handling
     this.emitState();
   }
 
@@ -787,6 +869,14 @@ export class FatigueEngine {
   }
 
   private handleUnknownTrackingFrame(now: number): void {
+    const noFaceDuration = now - this.lastFaceDetectedAt;
+    
+    if (noFaceDuration >= AUTO_PAUSE_THRESHOLD_MS && !this.isPaused) {
+      this.cameraStatus = 'covered';
+      this.pause(true);
+      this.onAlert('info', 'No face detected for 20s. Session auto-paused.');
+    }
+
     if (!this.eyesClosed) return;
 
     if (this.unknownStateStartAt === 0) {
@@ -818,15 +908,26 @@ export class FatigueEngine {
 
   private emitState(): void {
     const now = Date.now();
-    const sessionMinutes = (now - this.sessionStart) / 60000;
+    const currentPauseDuration = this.isPaused ? (now - this.pauseStartAt) : 0;
+    const effectiveElapsedMs = now - this.sessionStart - (this.totalPausedTime + currentPauseDuration);
+    const sessionMinutes = Math.max(0, effectiveElapsedMs / 60000);
+
+    const settings = this.getNotificationSettings();
+    const lowBlinkRate = settings.lowBlinkRate;
+
+    // Session average blink rate: smoothed denominator in first minute to avoid spikes.
+    const normalizedMinutes = Math.max(sessionMinutes, 1);
+    this.sessionAvgBlinkRate = sessionMinutes > 0
+      ? Math.round(this.blinkCount / normalizedMinutes)
+      : 0;
 
     // Fatigue score calculation (0-100)
-    // Use currentBlinkRate if available, otherwise fall back to sessionAvgBlinkRate (after restore)
+    // Use currentBlinkRate if available, otherwise fall back to sessionAvgBlinkRate
     const effectiveBlinkRate = this.currentBlinkRate > 0 ? this.currentBlinkRate : this.sessionAvgBlinkRate;
     
     const blinkDeficit = sessionMinutes < 1
       ? 0
-      : Math.max(0, (LOW_BLINK_RATE - effectiveBlinkRate) / LOW_BLINK_RATE) * 35;
+      : Math.max(0, (lowBlinkRate - effectiveBlinkRate) / lowBlinkRate) * 35;
     const closurePenalty = Math.min(this.longClosureEvents * 12, 36);
     // Let fatigue grow gradually with session duration after a short grace period.
     const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 40, 40);
@@ -836,11 +937,10 @@ export class FatigueEngine {
     if (fatigueScore > 70) fatigueLevel = 'High Fatigue';
     else if (fatigueScore > 40) fatigueLevel = 'Moderate Fatigue';
 
-    const settings = this.getNotificationSettings();
     const alertIntervalMs = Math.max(1, settings.fatigueNotificationIntervalMinutes) * 60 * 1000;
     const shouldThrottle = this.lastFatigueAlertAt === 0 || now - this.lastFatigueAlertAt >= alertIntervalMs;
 
-    if (shouldThrottle) {
+    if (shouldThrottle && !this.isPaused) {
       const isHigh = fatigueScore > settings.highFatigueThreshold;
       const isModerate = fatigueScore > settings.lowFatigueThreshold && !isHigh;
 
@@ -864,6 +964,11 @@ export class FatigueEngine {
       eyesOpen: !this.eyesClosed,
       sessionDurationMinutes: sessionMinutes,
       isRunning: this.running,
+      isPaused: this.isPaused,
+      isAutoPaused: this.isAutoPaused,
+      faceDetected: this.faceDetected,
+      cameraStatus: this.cameraStatus,
+      lowBlinkRate: lowBlinkRate,
     });
   }
 
@@ -871,37 +976,31 @@ export class FatigueEngine {
     this.running = false;
     this.clearFrameLoopHandles();
     this.hiddenFrameLoopActive = false;
-    this.closeHiddenTrackReader();
-    this.imageCapture = null;
+    
     if (this.heartbeatIntervalId) {
       clearInterval(this.heartbeatIntervalId);
       this.heartbeatIntervalId = null;
     }
     
-    // Release wake lock
     this.releaseWakeLock();
-
-    // Stop camera
-    if (this.cameraStream) {
-      this.cameraStream.getTracks().forEach(t => t.stop());
-      this.cameraStream = null;
-    } else if (this.videoElement?.srcObject) {
-      (this.videoElement.srcObject as MediaStream).getTracks().forEach(t => t.stop());
-      this.videoElement.srcObject = null;
-    }
-    if (this.videoElement) {
-      this.videoElement.srcObject = null;
-    }
+    this.stopCamera();
 
     if (this.faceLandmarker) {
       this.faceLandmarker.close();
       this.faceLandmarker = null;
     }
 
-    const sessionMinutes = (Date.now() - this.sessionStart) / 60000;
+    const now = Date.now();
+    const currentPauseDuration = this.isPaused ? (now - this.pauseStartAt) : 0;
+    const effectiveElapsedMs = now - this.sessionStart - (this.totalPausedTime + currentPauseDuration);
+    const sessionMinutes = Math.max(0, effectiveElapsedMs / 60000);
+
+    const settings = this.getNotificationSettings();
+    const lowBlinkRate = settings.lowBlinkRate;
+
     const blinkDeficit = sessionMinutes < 1
       ? 0
-      : Math.max(0, (LOW_BLINK_RATE - this.currentBlinkRate) / LOW_BLINK_RATE) * 35;
+      : Math.max(0, (lowBlinkRate - this.currentBlinkRate) / lowBlinkRate) * 35;
     const closurePenalty = Math.min(this.longClosureEvents * 12, 36);
     const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 40, 40);
     const fatigueScore = Math.min(100, Math.max(0, blinkDeficit + closurePenalty + durationPenalty));
@@ -921,6 +1020,11 @@ export class FatigueEngine {
       eyesOpen: true,
       sessionDurationMinutes: parseFloat(sessionMinutes.toFixed(1)),
       isRunning: false,
+      isPaused: this.isPaused,
+      isAutoPaused: this.isAutoPaused,
+      faceDetected: this.faceDetected,
+      cameraStatus: this.cameraStatus,
+      lowBlinkRate: lowBlinkRate,
       sessionDate: new Date().toISOString().split('T')[0],
     };
   }

@@ -50,6 +50,9 @@
 
       <div class="session-controls">
         <button id="sessionBtn" class="btn btn-primary">Start Session</button>
+        <div id="activeSessionControls" class="active-session-controls" style="display: none;">
+          <button id="pauseResumeBtn" class="btn btn-outline btn-sm">⏸️ Pause / Take Break</button>
+        </div>
         <button id="viewAnalyticsBtn" class="btn btn-outline btn-sm">📊 View Analytics</button>
         <button id="settingsBtn" class="btn btn-outline btn-sm">⚙️ Settings</button>
       </div>
@@ -136,6 +139,16 @@
               <span class="unit">min</span>
             </div>
             <p class="description">Minimum time gap between repeated fatigue notifications.</p>
+          </div>
+
+          <div class="form-group">
+            <label for="lowBlinkRate">Low Blink Rate Threshold</label>
+            <div class="slider-container">
+              <input type="range" id="lowBlinkRate" min="5" max="30" step="1" value="15">
+              <span id="lowBlinkRateValue" class="slider-value alert-value">15</span>
+              <span class="unit">bpm</span>
+            </div>
+            <p class="description">Blink rate below this value will contribute to fatigue score.</p>
           </div>
 
           <div class="form-group checkbox-group">

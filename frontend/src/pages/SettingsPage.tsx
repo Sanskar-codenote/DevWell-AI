@@ -9,6 +9,7 @@ export interface SettingsData {
   enableModerateFatigueNotification: boolean;
   enableHighFatigueNotification: boolean;
   enableBreakNotification: boolean;
+  lowBlinkRate: number;
 }
 
 // Chrome extension types
@@ -36,6 +37,7 @@ export default function SettingsPage() {
   const [lowFatigueThreshold, setLowFatigueThreshold] = useState<number>(50);
   const [highFatigueThreshold, setHighFatigueThreshold] = useState<number>(80);
   const [fatigueNotificationIntervalMinutes, setFatigueNotificationIntervalMinutes] = useState<number>(60);
+  const [lowBlinkRate, setLowBlinkRate] = useState<number>(15);
   const [enableModerateFatigueNotification, setEnableModerateFatigueNotification] = useState<boolean>(true);
   const [enableHighFatigueNotification, setEnableHighFatigueNotification] = useState<boolean>(true);
   const [enableBreakNotification, setEnableBreakNotification] = useState<boolean>(true);
@@ -54,6 +56,7 @@ export default function SettingsPage() {
           setLowFatigueThreshold(settings.lowFatigueThreshold || 50);
           setHighFatigueThreshold(settings.highFatigueThreshold || 80);
           setFatigueNotificationIntervalMinutes(settings.fatigueNotificationIntervalMinutes || 60);
+          setLowBlinkRate(settings.lowBlinkRate || 15);
           setEnableModerateFatigueNotification(settings.enableModerateFatigueNotification !== false);
           setEnableHighFatigueNotification(settings.enableHighFatigueNotification !== false);
           setEnableBreakNotification(
@@ -87,6 +90,7 @@ export default function SettingsPage() {
         lowFatigueThreshold,
         highFatigueThreshold,
         fatigueNotificationIntervalMinutes,
+        lowBlinkRate,
         enableModerateFatigueNotification,
         enableHighFatigueNotification,
         enableBreakNotification,
@@ -152,6 +156,7 @@ export default function SettingsPage() {
         setLowFatigueThreshold(event.data.settings.lowFatigueThreshold);
         setHighFatigueThreshold(event.data.settings.highFatigueThreshold);
         setFatigueNotificationIntervalMinutes(event.data.settings.fatigueNotificationIntervalMinutes ?? 60);
+        setLowBlinkRate(event.data.settings.lowBlinkRate ?? 15);
         setEnableModerateFatigueNotification(event.data.settings.enableModerateFatigueNotification !== false);
         setEnableHighFatigueNotification(event.data.settings.enableHighFatigueNotification !== false);
         setEnableBreakNotification(
@@ -248,6 +253,29 @@ export default function SettingsPage() {
               </div>
               <p className="text-xs text-slate-500 mt-1">
                 Minimum time between repeated fatigue notifications.
+              </p>
+            </div>
+
+            {/* Low Blink Rate Setting */}
+            <div>
+              <label htmlFor="lowBlinkRate" className="block text-sm font-medium text-slate-300 mb-2">
+                Low Blink Rate Threshold (Blinks/min)
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  id="lowBlinkRate"
+                  min="5"
+                  max="30"
+                  step="1"
+                  value={lowBlinkRate}
+                  onChange={(e) => setLowBlinkRate(Number(e.target.value))}
+                  className="flex-1"
+                />
+                <span className="text-lg font-medium text-emerald-400 w-12 text-center">{lowBlinkRate}</span>
+              </div>
+              <p className="text-xs text-slate-500 mt-1">
+                A blink rate below this value will contribute to your fatigue score. Normal range is usually 15-20 BPM.
               </p>
             </div>
 

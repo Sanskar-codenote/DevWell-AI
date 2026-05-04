@@ -36,12 +36,22 @@ let isTabVisible = document.visibilityState === 'visible';
 let unknownStateStartAt = 0;
 let lastResultAt = 0;
 let closureSampleCount = 0;
+let isPaused = false;
+let isAutoPaused = false;
+let totalPausedTime = 0;
+let pauseStartAt = 0;
+let faceDetected = false;
+let cameraStatus = 'inactive';
+let lastFaceDetectedAt = 0;
 const processingCanvas = document.createElement('canvas');
 const processingCtx = processingCanvas.getContext('2d', { willReadFrequently: true });
 processingCanvas.width = 640;
 processingCanvas.height = 480;
 
+const AUTO_PAUSE_THRESHOLD_MS = 20000;
+
 let earThreshold = DEFAULT_EAR_THRESHOLD;
+let lowBlinkRate = 15;
 let earCalibrationSamples = [];
 const CALIBRATION_SAMPLES_REQUIRED = 30;
 let openStateStartAt = 0;
@@ -69,6 +79,37 @@ function computeEAR(landmarks, eyeIndices) {
   return (v1 + v2) / (2.0 * h);
 }
 
+function stopCamera() {
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(t => { try { t.stop(); t.enabled = false; } catch (e) {} });
+    cameraStream = null;
+  }
+  if (cameraTrack) { try { cameraTrack.stop(); } catch(e) {} cameraTrack = null; }
+  closeHiddenTrackReader();
+  imageCapture = null;
+  if (videoElement) {
+    try { videoElement.pause(); videoElement.srcObject = null; videoElement.load(); } catch (e) {}
+  }
+  cameraStatus = 'inactive';
+}
+
+async function startCamera() {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+  });
+  cameraStream = stream;
+  cameraTrack = stream.getVideoTracks()[0] || null;
+  videoElement.srcObject = stream;
+  ensureHiddenCaptureProviders();
+  cameraStatus = 'active';
+  return new Promise(resolve => {
+    videoElement.onloadedmetadata = () => {
+      videoElement.play();
+      resolve();
+    };
+  });
+}
+
 function updateEARCalibration(avgEAR) {
   if (earCalibrationSamples.length < CALIBRATION_SAMPLES_REQUIRED) {
     earCalibrationSamples.push(avgEAR);
@@ -79,9 +120,42 @@ function updateEARCalibration(avgEAR) {
   }
 }
 
+function pauseSession(isAuto = false) {
+  if (!sessionActive || isPaused) return;
+  isPaused = true;
+  isAutoPaused = isAuto;
+  pauseStartAt = Date.now();
+  if (!isAuto) {
+    stopCamera();
+  }
+  chrome.runtime.sendMessage({ action: 'monitorMetrics', data: buildSessionData() }).catch(() => undefined);
+}
+
+async function resumeSession() {
+  if (!sessionActive || !isPaused) return;
+  const wasAutoPaused = isAutoPaused;
+  isPaused = false;
+  isAutoPaused = false;
+
+  if (!wasAutoPaused) {
+    try {
+      await startCamera();
+    } catch(err) {
+      pauseSession(false);
+      return;
+    }
+  }
+
+  if (pauseStartAt > 0) {
+    totalPausedTime += Date.now() - pauseStartAt;
+    pauseStartAt = 0;
+  }
+  chrome.runtime.sendMessage({ action: 'monitorMetrics', data: buildSessionData() }).catch(() => undefined);
+}
+
 function calculateFatigueScore(sessionMinutes, blinkRate) {
   if (sessionMinutes < 1) return 0;
-  const blinkDeficit = Math.max(0, (8 - blinkRate) / 8) * 35;
+  const blinkDeficit = Math.max(0, (lowBlinkRate - blinkRate) / lowBlinkRate) * 35;
   const closurePenalty = Math.min(longClosureEvents * 12, 36);
   const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 40, 40);
   return Math.min(100, Math.max(0, blinkDeficit + closurePenalty + durationPenalty));
@@ -89,12 +163,19 @@ function calculateFatigueScore(sessionMinutes, blinkRate) {
 
 function buildSessionData() {
   const now = Date.now();
-  const durationMinutes = sessionStartTime ? (now - sessionStartTime) / 60000 : 0;
+  const currentPauseDuration = isPaused ? (now - pauseStartAt) : 0;
+  const effectiveElapsedMs = now - sessionStartTime - (totalPausedTime + currentPauseDuration);
+  const durationMinutes = sessionStartTime ? Math.max(0, effectiveElapsedMs / 60000) : 0;
+  
   const oneMinuteAgo = now - 60000;
   blinkHistory = blinkHistory.filter((t) => t > oneMinuteAgo);
   const currentBlinkRate = blinkHistory.length;
-  const sessionAvgBlinkRate = durationMinutes > 0 ? Math.round(blinkCount / Math.max(durationMinutes, 1)) : 0;
-  const fatigueScore = Math.round(calculateFatigueScore(durationMinutes, currentBlinkRate));
+  
+  const normalizedMinutes = Math.max(durationMinutes, 1);
+  const sessionAvgBlinkRate = durationMinutes > 0 ? Math.round(blinkCount / normalizedMinutes) : 0;
+  
+  const effectiveBlinkRate = currentBlinkRate > 0 ? currentBlinkRate : sessionAvgBlinkRate;
+  const fatigueScore = Math.round(calculateFatigueScore(durationMinutes, effectiveBlinkRate));
 
   let fatigueLevel = 'Fresh';
   if (fatigueScore > 70) fatigueLevel = 'High Fatigue';
@@ -107,7 +188,15 @@ function buildSessionData() {
     fatigueScore,
     fatigueLevel,
     longClosureEvents,
-    sessionDurationMinutes: Math.round(durationMinutes * 10) / 10,
+    sessionDurationMinutes: durationMinutes,
+    lowBlinkRate,
+    isPaused,
+    isAutoPaused,
+    totalPausedTime,
+    pauseStartAt,
+    faceDetected,
+    cameraStatus,
+    eyesOpen: !eyesClosed,
   };
 }
 
@@ -236,6 +325,10 @@ async function startSession() {
   isStarting = true;
 
   try {
+    const settingsResult = await chrome.storage.local.get(['extensionSettings', 'websiteSettings']);
+    const settings = settingsResult.extensionSettings || settingsResult.websiteSettings || {};
+    lowBlinkRate = Number(settings.lowBlinkRate || 15);
+
     if (!faceLandmarker) {
       const filesetResolver = await FilesetResolver.forVisionTasks(chrome.runtime.getURL('lib/wasm'));
       faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
@@ -251,37 +344,31 @@ async function startSession() {
 
     if (!isStarting) return;
 
-    if (cameraStream) cameraStream.getTracks().forEach(t => t.stop());
+    if (cameraStream) stopCamera();
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
-    });
+    await startCamera();
 
     if (!isStarting) {
-      stream.getTracks().forEach(t => t.stop());
+      stopCamera();
       return;
     }
 
-    cameraStream = stream;
-    cameraTrack = stream.getVideoTracks()[0] || null;
-    videoElement.srcObject = stream;
     sessionActive = true;
     sessionStartTime = Date.now();
+    isPaused = false;
+    isAutoPaused = false;
+    totalPausedTime = 0;
+    pauseStartAt = 0;
+    faceDetected = false;
+    lastFaceDetectedAt = Date.now();
     resetSessionCounters();
-    
-    closeHiddenTrackReader();
-    ensureHiddenCaptureProviders();
 
-    videoElement.onloadedmetadata = () => {
-      if (!sessionActive) { stream.getTracks().forEach(t => t.stop()); return; }
-      videoElement.play();
-      updateInterval = setInterval(() => {
-        if (!sessionActive) return;
-        chrome.runtime.sendMessage({ action: 'monitorMetrics', data: buildSessionData() }).catch(() => undefined);
-      }, 1000);
-      chrome.runtime.sendMessage({ action: 'monitorStarted', data: buildSessionData() }).catch(() => undefined);
-      processFrame();
-    };
+    updateInterval = setInterval(() => {
+      if (!sessionActive) return;
+      chrome.runtime.sendMessage({ action: 'monitorMetrics', data: buildSessionData() }).catch(() => undefined);
+    }, 1000);
+    chrome.runtime.sendMessage({ action: 'monitorStarted', data: buildSessionData() }).catch(() => undefined);
+    processFrame();
   } catch (err) {
     sessionActive = false;
   } finally {
@@ -290,6 +377,12 @@ async function startSession() {
 }
 
 function handleUnknownTrackingFrame(now) {
+  const noFaceDuration = now - lastFaceDetectedAt;
+  if (noFaceDuration >= AUTO_PAUSE_THRESHOLD_MS && !isPaused) {
+    cameraStatus = 'covered';
+    pauseSession(true);
+  }
+
   if (!eyesClosed) return;
   if (unknownStateStartAt === 0) unknownStateStartAt = now;
 
@@ -311,8 +404,23 @@ function handleUnknownTrackingFrame(now) {
 
 function onFaceLandmarkerResults(results) {
   const now = Date.now();
-  if (!sessionActive || !results?.faceLandmarks || results.faceLandmarks.length === 0) {
+  if (!sessionActive) return;
+
+  if (!results?.faceLandmarks || results.faceLandmarks.length === 0) {
+    faceDetected = false;
     handleUnknownTrackingFrame(now);
+    return;
+  }
+
+  faceDetected = true;
+  lastFaceDetectedAt = now;
+  cameraStatus = 'active';
+
+  if (isPaused && isAutoPaused) {
+    resumeSession();
+  }
+
+  if (isPaused) {
     return;
   }
 
@@ -403,22 +511,7 @@ function stopSession() {
   if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
   hiddenFrameLoopActive = false;
 
-  if (cameraStream) {
-    cameraStream.getTracks().forEach(t => { try { t.stop(); t.enabled = false; } catch (e) {} });
-    cameraStream = null;
-  }
-  if (cameraTrack) { try { cameraTrack.stop(); } catch(e) {} cameraTrack = null; }
-
-  closeHiddenTrackReader();
-  imageCapture = null;
-
-  if (videoElement) {
-    try {
-      videoElement.pause();
-      videoElement.srcObject = null;
-      videoElement.load();
-    } catch (e) {}
-  }
+  stopCamera();
 
   if (faceLandmarker) {
     try { faceLandmarker.close(); } catch (e) {}
@@ -431,6 +524,8 @@ function stopSession() {
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.action === 'start') startSession();
   else if (message?.action === 'stop') stopSession();
+  else if (message?.action === 'pause') pauseSession();
+  else if (message?.action === 'resume') resumeSession();
 });
 
 // SELF-DESTRUCT MECHANISMS

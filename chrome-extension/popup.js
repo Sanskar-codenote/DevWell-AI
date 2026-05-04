@@ -36,6 +36,8 @@ class DevWellPopup {
     this.elements.userEmail = document.getElementById('userEmail');
     
     this.elements.sessionBtn = document.getElementById('sessionBtn');
+    this.elements.activeSessionControls = document.getElementById('activeSessionControls');
+    this.elements.pauseResumeBtn = document.getElementById('pauseResumeBtn');
     this.elements.viewAnalyticsBtn = document.getElementById('viewAnalyticsBtn');
     this.elements.settingsBtn = document.getElementById('settingsBtn');
     this.elements.guestModeBtn = document.getElementById('guestModeBtn');
@@ -56,12 +58,14 @@ class DevWellPopup {
     this.elements.lowFatigueThresholdInput = document.getElementById('lowFatigueThreshold');
     this.elements.highFatigueThresholdInput = document.getElementById('highFatigueThreshold');
     this.elements.fatigueNotificationIntervalInput = document.getElementById('fatigueNotificationInterval');
+    this.elements.lowBlinkRateInput = document.getElementById('lowBlinkRate');
     this.elements.enableModerateFatigueNotificationInput = document.getElementById('enableModerateFatigueNotification');
     this.elements.enableHighFatigueNotificationInput = document.getElementById('enableHighFatigueNotification');
     this.elements.enableBreakNotificationInput = document.getElementById('enableBreakNotification');
     this.elements.lowFatigueValueDisplay = document.getElementById('lowFatigueValue');
     this.elements.highFatigueValueDisplay = document.getElementById('highFatigueValue');
     this.elements.fatigueIntervalValueDisplay = document.getElementById('fatigueIntervalValue');
+    this.elements.lowBlinkRateValueDisplay = document.getElementById('lowBlinkRateValue');
     
 
   }
@@ -78,6 +82,15 @@ class DevWellPopup {
 
     this.elements.sessionBtn?.addEventListener('click', () => {
       void this.handleSessionAction();
+    });
+
+    this.elements.pauseResumeBtn?.addEventListener('click', async () => {
+      if (!this.sessionActive || !this.isLoggedIn) return;
+      if (this.sessionData?.isPaused) {
+        await this.sendRuntimeMessage('requestResumeSession');
+      } else {
+        await this.sendRuntimeMessage('requestPauseSession');
+      }
     });
 
     this.elements.settingsBtn?.addEventListener('click', () => {
@@ -117,6 +130,10 @@ class DevWellPopup {
       this.updateSliderDisplay();
     });
     this.elements.fatigueNotificationIntervalInput?.addEventListener('input', () => {
+      this.updateSliderDisplay();
+    });
+
+    this.elements.lowBlinkRateInput?.addEventListener('input', () => {
       this.updateSliderDisplay();
     });
 
@@ -366,6 +383,15 @@ class DevWellPopup {
       this.elements.sessionBtn.textContent = this.sessionActive ? 'End Session' : 'Start Session';
       this.elements.sessionBtn.className = this.sessionActive ? 'btn btn-outline' : 'btn btn-primary';
     }
+
+    if (this.elements.activeSessionControls) {
+      this.elements.activeSessionControls.style.display = this.sessionActive && this.isLoggedIn ? 'flex' : 'none';
+      if (this.sessionActive) {
+        if (this.elements.pauseResumeBtn) {
+          this.elements.pauseResumeBtn.textContent = this.sessionData?.isPaused ? '▶️ Resume / End Break' : '⏸️ Pause / Take Break';
+        }
+      }
+    }
     
     // Update settings button visibility based on login state
     if (this.elements.settingsBtn) {
@@ -528,6 +554,9 @@ class DevWellPopup {
       if (this.elements.fatigueNotificationIntervalInput) {
         this.elements.fatigueNotificationIntervalInput.value = String(this.settings.fatigueNotificationIntervalMinutes ?? 60);
       }
+      if (this.elements.lowBlinkRateInput) {
+        this.elements.lowBlinkRateInput.value = String(this.settings.lowBlinkRate ?? 15);
+      }
       if (this.elements.enableModerateFatigueNotificationInput) {
         this.elements.enableModerateFatigueNotificationInput.checked = this.settings.enableModerateFatigueNotification !== false;
       }
@@ -547,6 +576,9 @@ class DevWellPopup {
     if (this.elements.fatigueIntervalValueDisplay && this.elements.fatigueNotificationIntervalInput) {
       this.elements.fatigueIntervalValueDisplay.textContent = this.elements.fatigueNotificationIntervalInput.value;
     }
+    if (this.elements.lowBlinkRateValueDisplay && this.elements.lowBlinkRateInput) {
+      this.elements.lowBlinkRateValueDisplay.textContent = this.elements.lowBlinkRateInput.value;
+    }
   }
 
   async saveSettings() {
@@ -554,6 +586,7 @@ class DevWellPopup {
       lowFatigueThreshold: Number(this.elements.lowFatigueThresholdInput.value),
       highFatigueThreshold: Number(this.elements.highFatigueThresholdInput.value),
       fatigueNotificationIntervalMinutes: Number(this.elements.fatigueNotificationIntervalInput.value),
+      lowBlinkRate: Number(this.elements.lowBlinkRateInput.value),
       enableModerateFatigueNotification: this.elements.enableModerateFatigueNotificationInput.checked,
       enableHighFatigueNotification: this.elements.enableHighFatigueNotificationInput.checked,
       enableBreakNotification: this.elements.enableBreakNotificationInput.checked,

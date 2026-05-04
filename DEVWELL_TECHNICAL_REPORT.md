@@ -35,6 +35,41 @@ Camera Stream → MediaPipe Face Mesh → Eye Landmarks → EAR Calculation
 
 ---
 
+## 👥 User Types & Features
+
+DevWell provides two modes of operation to balance privacy and convenience:
+
+### 👤 Registered User
+**Best for:** Developers who want long-term progress tracking and cross-tab synchronization.
+- **Persistent Analytics**: All session metrics are securely stored in the PostgreSQL database for weekly/monthly trend analysis.
+- **Cross-Tab Synchronization**: Start a session in one tab, see live metrics and control it from any other DevWell tab or the extension popup.
+- **Bidirectional Settings Sync**: Change your "Low Blink Rate Threshold" or notification preferences in the extension popup and they instantly sync to the web dashboard (and vice versa).
+- **Advanced Controls**: Manual "Pause / Take Break" functionality with hardware camera release.
+
+### 👤 Guest User (Local-only)
+**Best for:** Quick setup or users who prefer 100% local data storage.
+- **Full Privacy**: No account required. All monitoring happens entirely within your browser.
+- **Local Analytics**: View your recent session history via the specialized "Guest Analytics" view (stored in `chrome.storage.local`).
+- **Real-time Monitoring**: Access to the full fatigue engine, including blink detection and 20-20-20 break reminders.
+- **Data Boundary**: Data is limited to the current browser profile and is not synced across devices or browsers.
+
+---
+
+## 🧠 Session Management & Fatigue Logic
+
+### Pause, Break, and Auto-Pause
+DevWell incorporates robust session management to ensure fatigue scores are not artificially inflated during breaks or interruptions.
+
+1.  **Manual Pause & Breaks:** The user can manually pause the session or start a break. This action immediately stops the camera stream and releases the hardware lock (turning off the webcam light) to ensure privacy and save power. The session timer and fatigue calculations are suspended.
+2.  **Auto-Pause (Face Absence):** If no face is detected for 20 continuous seconds, the system triggers an `auto-pause`. The camera remains active (to detect when the user returns) but the fatigue score calculations and session timer are suspended to prevent false penalties.
+3.  **Auto-Resume:** When the system is in an `auto-paused` state, the detection of a face automatically resumes the session timer and tracking. Manual pauses require manual resumes to prevent accidental re-engagement.
+4.  **Timer Accuracy:** The `FatigueEngine` strictly accounts for `totalPausedTime`. The session duration used for calculating "Blinks Per Minute" and "Duration Penalty" is purely the active time, ensuring complete accuracy even if the session is left paused for hours.
+
+### Configurable Thresholds
+- **Dynamic Baselines:** The system allows the user to customize the "Low Blink Rate Threshold" (default: 15 BPM). The fatigue calculation dynamically scales penalties based on this user-defined target rather than a generic hardcoded value.
+
+---
+
 ## 🐳 Docker Deployment Details
 
 ### Environment Configuration

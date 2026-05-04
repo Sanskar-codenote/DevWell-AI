@@ -164,6 +164,12 @@ class DevWellContentScript {
 
     if (command?.type === 'stop') {
       void this.safeRuntimeSendMessage({ action: 'requestStopSession' });
+    } else if (command?.type === 'start') {
+      void this.safeRuntimeSendMessage({ action: 'requestStartSession' });
+    } else if (command?.type === 'pause') {
+      void this.safeRuntimeSendMessage({ action: 'requestPauseSession' });
+    } else if (command?.type === 'resume') {
+      void this.safeRuntimeSendMessage({ action: 'requestResumeSession' });
     } else if (command?.type === 'syncSettings') {
       void this.safeRuntimeSendMessage({ action: 'syncWebsiteSettings', settings: command.settings });
     } else if (command?.type === 'ping') {

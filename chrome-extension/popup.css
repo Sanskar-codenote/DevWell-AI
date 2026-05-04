@@ -198,9 +198,18 @@ body {
 
 .session-controls {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
   margin-bottom: 16px;
+}
+
+.active-session-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.active-session-controls button {
+  flex: 1;
 }
 
 .btn {

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Play, Square, Eye, EyeOff, Clock, AlertTriangle, Zap, Activity, X } from 'lucide-react';
+import { Play, Square, Eye, EyeOff, Clock, AlertTriangle, Zap, Activity, X, Pause, CameraOff } from 'lucide-react';
 import { useSession } from '../context/SessionContext';
 
 function formatDuration(minutes: number): string {
@@ -30,7 +30,7 @@ function getFatigueRingColor(score: number): string {
 export default function DashboardPage() {
   const {
     state, alerts, sessionSummary, saving, videoRef, isStarting, isSessionOwner, extensionAvailable, extensionAuthMismatch,
-    startSession, stopSession, dismissAlert, clearSummary,
+    startSession, stopSession, pauseSession, resumeSession, dismissAlert, clearSummary,
   } = useSession();
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -39,7 +39,7 @@ export default function DashboardPage() {
     const processingVideo = videoRef.current;
     if (!preview || !processingVideo) return;
 
-    if (!state.isRunning || !isSessionOwner) {
+    if (!state.isRunning || !isSessionOwner || state.cameraStatus === 'inactive') {
       preview.srcObject = null;
       return;
     }
@@ -51,7 +51,7 @@ export default function DashboardPage() {
     void preview.play().catch(() => {
       // Playback can fail transiently during route transitions; session processing continues.
     });
-  }, [isSessionOwner, state.isRunning, videoRef]);
+  }, [isSessionOwner, state.isRunning, state.cameraStatus, videoRef]);
 
   const handleStartSession = () => {
     if (previewVideoRef.current) {
@@ -97,13 +97,37 @@ export default function DashboardPage() {
             )}
           </button>
         ) : (
-          <button
-            onClick={stopSession}
-            className="flex items-center gap-2 px-5 py-2.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30 font-semibold rounded-xl transition-all text-sm cursor-pointer"
-          >
-            <Square className="h-4 w-4" />
-            End Session
-          </button>
+          <div className="flex items-center gap-2">
+            {isSessionOwner && !extensionAvailable && (
+              <>
+                {state.isPaused ? (
+                  <button
+                    onClick={resumeSession}
+                    className="flex items-center gap-2 px-4 py-2 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30 font-semibold rounded-xl transition-all text-sm cursor-pointer"
+                  >
+                    <Play className="h-4 w-4" />
+                    Resume / End Break
+                  </button>
+                ) : (
+                  <button
+                    onClick={pauseSession}
+                    className="flex items-center gap-2 px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 border border-amber-500/30 font-semibold rounded-xl transition-all text-sm cursor-pointer"
+                  >
+                    <Pause className="h-4 w-4" />
+                    Pause / Take Break
+                  </button>
+                )}
+              </>
+            )}
+            
+            <button
+              onClick={stopSession}
+              className="flex items-center gap-2 px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30 font-semibold rounded-xl transition-all text-sm cursor-pointer"
+            >
+              <Square className="h-4 w-4" />
+              End Session
+            </button>
+          </div>
         )}
       </div>
 
@@ -209,7 +233,7 @@ export default function DashboardPage() {
             <div className="relative flex-1 min-h-[240px] bg-black/40 rounded-xl overflow-hidden flex items-center justify-center">
               <video
                 ref={previewVideoRef}
-                className={`w-full h-full object-cover rounded-xl ${state.isRunning && isSessionOwner ? 'block' : 'hidden'}`}
+                className={`w-full h-full object-cover rounded-xl ${state.isRunning && isSessionOwner && !state.isPaused ? 'block' : 'hidden'}`}
                 playsInline
                 muted
                 style={{ transform: 'scaleX(-1)' }}
@@ -221,6 +245,31 @@ export default function DashboardPage() {
                   <p className="text-xs text-slate-600 mt-1">Start a session to begin monitoring</p>
                 </div>
               )}
+              {state.isRunning && state.isPaused && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 rounded-xl z-20">
+                  {state.cameraStatus === 'covered' ? (
+                    <>
+                      <CameraOff className="h-10 w-10 text-red-400 mb-3" />
+                      <p className="text-sm text-slate-200 font-semibold">Camera Covered or Off</p>
+                      <p className="text-xs text-slate-400 mt-1 text-center px-4">Make sure your face is visible to resume monitoring</p>
+                    </>
+                  ) : (
+                    <>
+                      <Pause className="h-10 w-10 text-amber-400 mb-3" />
+                      <p className="text-sm text-slate-200 font-semibold">Paused / On Break</p>
+                      <p className="text-xs text-slate-400 mt-1">Face detection suspended</p>
+                    </>
+                  )}
+                  {isSessionOwner && (
+                    <button
+                      onClick={resumeSession}
+                      className="mt-4 px-4 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-bold rounded-lg transition-colors"
+                    >
+                      Resume Now
+                    </button>
+                  )}
+                </div>
+              )}
               {state.isRunning && !isSessionOwner && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 rounded-xl z-10">
                   <Eye className="h-10 w-10 text-cyan-400 mb-3" />
@@ -228,7 +277,7 @@ export default function DashboardPage() {
                   <p className="text-xs text-slate-400 mt-1">This tab is mirroring the shared DevWell session</p>
                 </div>
               )}
-              {state.isRunning && (
+              {state.isRunning && !state.isPaused && (
                 <div className="absolute top-3 left-3 flex items-center gap-2 bg-black/60 backdrop-blur px-2.5 py-1 rounded-lg z-10">
                   <div className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
                   <span className="text-xs text-white font-medium">{isSessionOwner ? 'LIVE' : 'SYNC'}</span>
@@ -293,7 +342,7 @@ export default function DashboardPage() {
               <div>
                 <p className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">Current (60s)</p>
                 <div className="flex items-baseline gap-1.5">
-                  <p className={`text-xl font-bold ${state.currentBlinkRate < 8 && state.isRunning ? 'text-red-400' : 'text-white'}`}>
+                  <p className={`text-xl font-bold ${state.currentBlinkRate < state.lowBlinkRate && state.isRunning && !state.isPaused ? 'text-red-400' : 'text-white'}`}>
                     {state.currentBlinkRate}
                   </p>
                   <span className="text-xs text-slate-500">/min</span>
@@ -310,13 +359,13 @@ export default function DashboardPage() {
             <div className="mt-2 h-1.5 bg-white/5 rounded-full overflow-hidden">
               <div
                 className={`h-full rounded-full transition-all duration-300 ${
-                  state.currentBlinkRate >= 15 ? 'bg-emerald-400' :
-                  state.currentBlinkRate >= 8 ? 'bg-amber-400' : 'bg-red-400'
+                  state.currentBlinkRate >= state.lowBlinkRate + 5 ? 'bg-emerald-400' :
+                  state.currentBlinkRate >= state.lowBlinkRate ? 'bg-amber-400' : 'bg-red-400'
                 }`}
-                style={{ width: `${Math.min(100, (state.currentBlinkRate / 20) * 100)}%` }}
+                style={{ width: `${Math.min(100, (state.currentBlinkRate / (state.lowBlinkRate + 5)) * 100)}%` }}
               />
             </div>
-            <p className="text-xs text-slate-500 mt-1.5">Normal: 15-20/min</p>
+            <p className="text-xs text-slate-500 mt-1.5">Target: {state.lowBlinkRate}+/min</p>
           </div>
 
           {/* Total Blinks */}

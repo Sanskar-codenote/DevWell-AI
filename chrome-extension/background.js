@@ -21,6 +21,7 @@ const DEFAULT_NOTIFICATION_SETTINGS = {
   enableModerateFatigueNotification: true,
   enableHighFatigueNotification: true,
   enableBreakNotification: true,
+  lowBlinkRate: 15,
 };
 
 class DevWellBackground {
@@ -149,10 +150,14 @@ class DevWellBackground {
   startSessionTimer() {
     this.stopSessionTimer();
     this.sessionTimer = setInterval(() => {
-      if (!this.sessionActive) return;
-      const currentDurationMinutes = this.sessionStartTime ? (Date.now() - this.sessionStartTime) / 60000 : 0;
+      if (!this.sessionActive || this.sessionData?.isPaused) return;
+      
+      const now = Date.now();
+      const currentPauseDuration = this.sessionData?.isPaused ? (now - this.sessionData.pauseStartAt) : 0;
+      const effectiveElapsedMs = now - this.sessionStartTime - ((this.sessionData?.totalPausedTime || 0) + currentPauseDuration);
+      
       if (this.sessionData) {
-        this.sessionData.sessionDurationMinutes = currentDurationMinutes;
+        this.sessionData.sessionDurationMinutes = Math.max(0, effectiveElapsedMs / 60000);
       }
       this.updateBadge();
       this.broadcastState().catch(() => undefined);
@@ -194,6 +199,7 @@ class DevWellBackground {
     const fatigueNotificationIntervalMinutes = Number(
       base.fatigueNotificationIntervalMinutes ?? DEFAULT_NOTIFICATION_SETTINGS.fatigueNotificationIntervalMinutes
     );
+    const lowBlinkRate = Number(base.lowBlinkRate ?? DEFAULT_NOTIFICATION_SETTINGS.lowBlinkRate);
 
     return {
       lowFatigueThreshold: Number.isFinite(lowFatigueThreshold) ? lowFatigueThreshold : DEFAULT_NOTIFICATION_SETTINGS.lowFatigueThreshold,
@@ -204,6 +210,7 @@ class DevWellBackground {
       enableModerateFatigueNotification: base.enableModerateFatigueNotification !== false,
       enableHighFatigueNotification: base.enableHighFatigueNotification !== false,
       enableBreakNotification: base.enableBreakNotification ?? base.enable20MinNotification ?? true,
+      lowBlinkRate: Number.isFinite(lowBlinkRate) ? lowBlinkRate : DEFAULT_NOTIFICATION_SETTINGS.lowBlinkRate,
     };
   }
 
@@ -407,6 +414,18 @@ class DevWellBackground {
         }
         return this.finalizeSession(this.sessionData, { reason: 'Session stopped from extension popup' });
 
+      case 'requestPauseSession':
+        if (this.monitorTabId) {
+          await chrome.tabs.sendMessage(this.monitorTabId, { action: 'pause' }).catch(() => {});
+        }
+        return { success: true };
+
+      case 'requestResumeSession':
+        if (this.monitorTabId) {
+          await chrome.tabs.sendMessage(this.monitorTabId, { action: 'resume' }).catch(() => {});
+        }
+        return { success: true };
+
       case 'monitorStarted':
         this.sessionActive = true;
         this.sessionStartTime = Date.now();
@@ -421,8 +440,23 @@ class DevWellBackground {
       case 'monitorMetrics':
         if (!message.data) return { success: false, error: 'Missing session data' };
         this.sessionActive = true;
-        const currentDurationMinutes = this.sessionStartTime ? (Date.now() - this.sessionStartTime) / 60000 : 0;
-        this.sessionData = { ...(this.sessionData ?? {}), ...message.data, sessionDurationMinutes: currentDurationMinutes };
+        
+        const isPausedFromMonitor = message.data.isPaused;
+        const totalPausedTime = message.data.totalPausedTime || (this.sessionData?.totalPausedTime || 0);
+        const pauseStartAt = message.data.pauseStartAt || (this.sessionData?.pauseStartAt || 0);
+        
+        const now = Date.now();
+        const currentPauseDuration = isPausedFromMonitor ? (now - pauseStartAt) : 0;
+        const effectiveElapsedMs = now - this.sessionStartTime - (totalPausedTime + currentPauseDuration);
+        const currentDurationMinutes = this.sessionStartTime ? Math.max(0, effectiveElapsedMs / 60000) : 0;
+        
+        this.sessionData = { 
+          ...(this.sessionData ?? {}), 
+          ...message.data, 
+          sessionDurationMinutes: currentDurationMinutes,
+          totalPausedTime,
+          pauseStartAt
+        };
         await chrome.storage.local.set({ sessionActive: true, sessionData: this.sessionData, sessionError: null });
         await this.handleAlerts();
         this.updateBadge();
