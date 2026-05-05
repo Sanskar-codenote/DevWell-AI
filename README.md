@@ -15,7 +15,7 @@ DevWell is a **privacy-first developer wellness platform** that monitors eye bli
 
 ## 🚀 Key Features
 
-- **Real-time Fatigue Detection**: Advanced local camera-based blink and drowsiness monitoring using MediaPipe Blendshapes, featuring personalized baselines and momentum-based physiological smoothing.
+- **Real-time Fatigue Detection**: Advanced local camera-based blink and drowsiness monitoring using MediaPipe Blendshapes, featuring momentum-based physiological smoothing and goal-oriented blink training.
 - **Robust Background Tracking**: Specially optimized browser extension maintains high-fidelity blink tracking even when tabs are hidden or throttled.
 - **Cross-Browser Support**: Fully compatible with both **Google Chrome** and **Mozilla Firefox**.
 - **Healthy Reminders**: Configurable alerts based on the 20-20-20 rule and advanced fatigue scoring (Fresh → Moderate → High).

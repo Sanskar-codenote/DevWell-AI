@@ -66,7 +66,6 @@ let pendingState = 'FACE_LOST';
 let stateHoldStart = 0;
 let blinkIntervals = [];
 let recentClosures = [];
-let baselineBlinkRate = 0;
 
 function calculateStdDev(values) {
   if (values.length < 2) return 0;
@@ -189,15 +188,11 @@ async function resumeSession() {
 }
 
 function calculateFatigueScore(sessionMinutes, blinkRate, currentBlinkRate, now) {
-  if (sessionMinutes < 3 && currentBlinkRate > 0) {
-    baselineBlinkRate = baselineBlinkRate === 0 ? currentBlinkRate : baselineBlinkRate * 0.9 + currentBlinkRate * 0.1;
-  }
-
   function sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
   const normalizedPerclos = perclosValue / 25;
   const perclosWeight = sigmoid((normalizedPerclos - 0.5) * 6) * 25;
 
-  const referenceRate = baselineBlinkRate > 0 ? baselineBlinkRate : lowBlinkRate;
+  const referenceRate = lowBlinkRate;
   const relativeDeficit = Math.max(0, (referenceRate - currentBlinkRate) / referenceRate);
   const blinkDeficit = relativeDeficit * 30;
 
@@ -465,7 +460,6 @@ function resetSessionCounters() {
   lastResultAt = 0;
   blinkIntervals = [];
   recentClosures = [];
-  baselineBlinkRate = 0;
   resetClosureTracking();
 }
 

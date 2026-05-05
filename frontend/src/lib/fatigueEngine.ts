@@ -241,7 +241,6 @@ export class FatigueEngine {
 
   private blinkIntervals: number[] = [];
   private recentClosures: number[] = [];
-  private baselineBlinkRate = 0;
 
   private processingCanvas: HTMLCanvasElement | null = null;
   private processingCtx: CanvasRenderingContext2D | null = null;
@@ -1067,14 +1066,6 @@ export class FatigueEngine {
       ? Math.round(this.blinkCount / normalizedMinutes)
       : 0;
 
-    // 🔥 Baseline Blink Rate (Personalization)
-    if (sessionMinutes < 3 && this.currentBlinkRate > 0) {
-      this.baselineBlinkRate =
-        this.baselineBlinkRate === 0
-          ? this.currentBlinkRate
-          : this.baselineBlinkRate * 0.9 + this.currentBlinkRate * 0.1;
-    }
-
     // 🔥 Sigmoid-based PERCLOS Scaling
     function sigmoid(x: number): number {
       return 1 / (1 + Math.exp(-x));
@@ -1082,11 +1073,8 @@ export class FatigueEngine {
     const normalizedPerclos = this.perclosValue / 25;
     const perclosWeight = sigmoid((normalizedPerclos - 0.5) * 6) * 25;
 
-    // 🔥 Relative Blink Deficit
-    const referenceRate =
-      this.baselineBlinkRate > 0
-        ? this.baselineBlinkRate
-        : settings.lowBlinkRate;
+    // 🔥 Absolute Blink Deficit (Training Goal)
+    const referenceRate = settings.lowBlinkRate;
 
     const relativeDeficit = Math.max(
       0,

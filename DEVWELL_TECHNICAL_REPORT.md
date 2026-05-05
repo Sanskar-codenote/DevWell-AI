@@ -67,7 +67,7 @@ The fatigue score is a multi-factor weighted sum designed to provide a scientifi
 | Factor | Max Weight | Logic |
 |--------|------------|-------|
 | **PERCLOS (Sigmoid)** | 25 pts | Primary driver. Normalized against a 25% window and scaled using a Sigmoid curve for a natural progression. |
-| **Relative Blink Deficit**| 30 pts | Penalty calculated against a **Personalized Baseline** (learned in the first 3 minutes of a session). |
+| **Absolute Blink Deficit**| 30 pts | Penalty calculated directly against the user's **configured goal blink rate**, enforcing active blink training. |
 | **Blink Variability** | 15 pts | Penalty based on the Standard Deviation of recent blink intervals, detecting erratic blinking patterns. |
 | **Acute Closures** | 15 pts | Penalty for discrete long-closure events (microsleeps). |
 | **Duration (Exp)** | 20 pts | Exponential fatigue accumulation based on session active time. |
