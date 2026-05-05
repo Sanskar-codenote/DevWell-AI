@@ -59,6 +59,8 @@ const CALIBRATION_SAMPLES_REQUIRED = 30;
 let openStateStartAt = 0;
 let perclosValue = 0;
 let eyeClosureHistory = [];
+let currentState = 'FACE_LOST';
+let smoothedFatigueScore = 0;
 
 document.addEventListener('visibilitychange', () => {
   const wasVisible = isTabVisible;
@@ -160,16 +162,28 @@ async function resumeSession() {
   chrome.runtime.sendMessage({ action: 'monitorMetrics', data: buildSessionData() }).catch(() => undefined);
 }
 
-function calculateFatigueScore(sessionMinutes, blinkRate) {
-  if (sessionMinutes < 1) return 0;
-  const blinkDeficit = Math.max(0, (lowBlinkRate - blinkRate) / lowBlinkRate) * 30;
+function calculateFatigueScore(sessionMinutes, blinkRate, currentBlinkRate) {
+  let blinkDeficit = 0;
+  if (currentBlinkRate >= 3 || sessionMinutes < 1) {
+    blinkDeficit = sessionMinutes < 1 ? 0 : Math.max(0, (lowBlinkRate - blinkRate) / lowBlinkRate) * 30;
+  }
   
   const perclosWeight = (perclosValue / 15) * 60;
   const acuteClosureWeight = Math.min(longClosureEvents * 5, 20);
   const closurePenalty = Math.min(perclosWeight + acuteClosureWeight, 80);
   
   const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 20, 20);
-  return Math.min(100, Math.max(0, blinkDeficit + closurePenalty + durationPenalty));
+  const rawFatigueScore = Math.min(100, Math.max(0, blinkDeficit + closurePenalty + durationPenalty));
+
+  let nextFatigueScore = 0.2 * rawFatigueScore + 0.8 * smoothedFatigueScore;
+  if (nextFatigueScore > smoothedFatigueScore + 5) {
+    nextFatigueScore = smoothedFatigueScore + 5;
+  } else if (nextFatigueScore < smoothedFatigueScore - 5) {
+    nextFatigueScore = smoothedFatigueScore - 5;
+  }
+  
+  smoothedFatigueScore = nextFatigueScore;
+  return Math.round(smoothedFatigueScore);
 }
 
 function buildSessionData() {
@@ -186,7 +200,7 @@ function buildSessionData() {
   const sessionAvgBlinkRate = durationMinutes > 0 ? Math.round(blinkCount / normalizedMinutes) : 0;
   
   const effectiveBlinkRate = currentBlinkRate > 0 ? currentBlinkRate : sessionAvgBlinkRate;
-  const fatigueScore = Math.round(calculateFatigueScore(durationMinutes, effectiveBlinkRate));
+  const fatigueScore = calculateFatigueScore(durationMinutes, effectiveBlinkRate, currentBlinkRate);
 
   let fatigueLevel = 'Fresh';
   if (fatigueScore > 70) fatigueLevel = 'High Fatigue';
@@ -468,8 +482,6 @@ function onFaceLandmarkerResults(results) {
   const maxEyeWidth = Math.max(leftEyeWidth, rightEyeWidth);
   const eyeAsymmetryRatio = maxEyeWidth / Math.max(minEyeWidth, 1e-6);
   
-  // Pitch detection (looking down at keyboard)
-  const eyeCenterY = (landmarks[LEFT_EYE[0]].y + landmarks[RIGHT_EYE[0]].y) / 2;
   const leftEAR = computeEAR(landmarks, LEFT_EYE);
   const rightEAR = computeEAR(landmarks, RIGHT_EYE);
   const avgEAR = (leftEAR + rightEAR) / 2;
@@ -488,20 +500,30 @@ function onFaceLandmarkerResults(results) {
   const mouthY = landmarks[13].y; // Upper lip inner
   const headPitchRatio = (noseTipY - eyeCenterY) / Math.max(mouthY - eyeCenterY, 1e-6);
 
-  // Dynamic thresholds: stricter when eyes look closed to catch keyboard entry early
-  const minPitchThreshold = eyesCurrentlyClosed ? 0.40 : 0.35; // Looking up
-  const maxPitchThreshold = eyesCurrentlyClosed ? 0.60 : 0.68; // Looking down at keyboard
+  // Attention State Machine Classification
+  let nextState = 'ATTENTIVE';
 
-  if (minEyeWidth < MIN_VALID_EYE_WIDTH || eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO || headPitchRatio < minPitchThreshold || headPitchRatio > maxPitchThreshold) {
+  // Signal validation: Face lost if structural signals are corrupted
+  const signalLost = minEyeWidth < MIN_VALID_EYE_WIDTH || eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO;
+  
+  if (signalLost || headPitchRatio < 0.35) {
+    nextState = 'FACE_LOST';
+  } else if (headPitchRatio > 0.60) { // Downward pitch > ~20 degrees
+    nextState = 'LOOKING_DOWN';
+  }
+
+  currentState = nextState;
+
+  if (currentState !== 'ATTENTIVE') {
     if (eyesClosed) {
       resetClosureTracking();
     }
     handleUnknownTrackingFrame(now);
-    updatePERCLOS(now);
     return;
   }
 
   unknownStateStartAt = 0;
+
 
   if (eyesCurrentlyClosed) {
     openStateStartAt = 0;
@@ -517,10 +539,13 @@ function onFaceLandmarkerResults(results) {
     const stableEnough = (now - openStateStartAt >= REOPEN_STABILITY_MS) || isBackground;
     
     if (stableEnough) {
-      // Record for PERCLOS using the true end time of the closure
-      eyeClosureHistory.push({ start: eyeClosedStart, end: openStateStartAt });
-
       const closedDuration = openStateStartAt - eyeClosedStart;
+
+      // Record for PERCLOS using the true end time of the closure
+      // Signal validation: Only count closures > 150ms
+      if (closedDuration >= 150) {
+        eyeClosureHistory.push({ start: eyeClosedStart, end: openStateStartAt });
+      }
       
       const sparseBackgroundClosure = isBackground && 
         closedDuration >= DROWSINESS_THRESHOLD_MS && 

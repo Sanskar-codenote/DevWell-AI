@@ -1,3 +1,5 @@
+export type AttentionState = 'ATTENTIVE' | 'LOOKING_DOWN' | 'FACE_LOST';
+
 export interface FatigueState {
   blinkCount: number;
   currentBlinkRate: number;
@@ -16,7 +18,9 @@ export interface FatigueState {
   cameraStatus: 'active' | 'inactive' | 'covered';
   lowBlinkRate: number;
   perclos: number;
+  attentionState?: AttentionState;
 }
+
 
 export interface SessionSummary extends FatigueState {
   sessionDate: string;
@@ -203,6 +207,10 @@ export class FatigueEngine {
   // PERCLOS tracking
   private perclosValue = 0;
   private eyeClosureHistory: { start: number; end: number }[] = [];
+
+  // Attention & Smoothing tracking
+  private currentState: AttentionState = 'FACE_LOST';
+  private smoothedFatigueScore = 0;
 
   private processingCanvas: HTMLCanvasElement | null = null;
   private processingCtx: CanvasRenderingContext2D | null = null;
@@ -755,25 +763,30 @@ export class FatigueEngine {
     const mouthY = landmarks[13].y; // Upper lip inner
     const headPitchRatio = (noseTipY - eyeCenterY) / Math.max(mouthY - eyeCenterY, 1e-6);
 
-    // Dynamic thresholds: stricter when eyes look closed to catch keyboard entry early
-    const minPitchThreshold = eyesCurrentlyClosed ? 0.40 : 0.35; // Looking up
-    const maxPitchThreshold = eyesCurrentlyClosed ? 0.60 : 0.68; // Looking down at keyboard
+    // Attention State Machine Classification
+    let nextState: AttentionState = 'ATTENTIVE';
 
-    const unreliablePose = 
-      minEyeWidth < MIN_VALID_EYE_WIDTH || 
-      eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO || 
-      headPitchRatio < minPitchThreshold || 
-      headPitchRatio > maxPitchThreshold;
-    if (unreliablePose) {
-      // Immediate reset on unreliable pose to prevent false drowsy events
+    // Signal validation: Face lost if structural signals are corrupted
+    const signalLost = minEyeWidth < MIN_VALID_EYE_WIDTH || eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO;
+    
+    if (signalLost || headPitchRatio < 0.35) {
+      nextState = 'FACE_LOST';
+    } else if (headPitchRatio > 0.60) { // Downward pitch > ~20 degrees
+      nextState = 'LOOKING_DOWN';
+    }
+
+    this.currentState = nextState;
+
+    if (this.currentState !== 'ATTENTIVE') {
+      // Gate updates: Do NOT count closures, do NOT update PERCLOS or blinks
       if (this.eyesClosed) {
         this.resetClosureTracking();
       }
       this.handleUnknownTrackingFrame(now);
-      this.updatePERCLOS(now);
-      this.emitState();
+      this.emitState(); // Will return smoothed previous score
       return;
     }
+    
     this.unknownStateStartAt = 0;
 
     if (eyesCurrentlyClosed) {
@@ -817,12 +830,14 @@ export class FatigueEngine {
           return;
         }
 
-        // Record closure for PERCLOS ONLY ONCE after stability is confirmed.
-        // Use openStateStartAt as the true end time of the closure.
-        this.eyeClosureHistory.push({ start: this.eyeClosedStart, end: this.openStateStartAt });
-
         // Stability period passed, classify the closure event
         const closureDuration = this.openStateStartAt - this.eyeClosedStart;
+
+        // Record closure for PERCLOS ONLY ONCE after stability is confirmed.
+        // Signal validation: Only count closures > 150ms to filter noise/winks.
+        if (closureDuration >= 150) {
+          this.eyeClosureHistory.push({ start: this.eyeClosedStart, end: this.openStateStartAt });
+        }
         
         const sparseBackgroundClosure =
           isBackground &&
@@ -979,12 +994,15 @@ export class FatigueEngine {
       : 0;
 
     // Fatigue score calculation (0-100)
-    // Use currentBlinkRate if available, otherwise fall back to sessionAvgBlinkRate
-    const effectiveBlinkRate = this.currentBlinkRate > 0 ? this.currentBlinkRate : this.sessionAvgBlinkRate;
     
-    const blinkDeficit = sessionMinutes < 1
-      ? 0
-      : Math.max(0, (lowBlinkRate - effectiveBlinkRate) / lowBlinkRate) * 30;
+    // Prevent Low-Sample Instability
+    let blinkDeficit = 0;
+    if (this.currentBlinkRate >= 3 || sessionMinutes < 1) {
+      const effectiveBlinkRate = this.currentBlinkRate > 0 ? this.currentBlinkRate : this.sessionAvgBlinkRate;
+      blinkDeficit = sessionMinutes < 1
+        ? 0
+        : Math.max(0, (lowBlinkRate - effectiveBlinkRate) / lowBlinkRate) * 30;
+    }
 
     // closurePenalty now driven primarily by PERCLOS (time eyes are closed)
     // plus a small weight for discrete "microsleep" events.
@@ -996,7 +1014,21 @@ export class FatigueEngine {
     // Let fatigue grow gradually with session duration after a short grace period.
     const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 20, 20);
     
-    const fatigueScore = Math.min(100, Math.max(0, blinkDeficit + closurePenalty + durationPenalty));
+    const rawFatigueScore = Math.min(100, Math.max(0, blinkDeficit + closurePenalty + durationPenalty));
+
+    // Temporal Smoothing (EMA)
+    let nextFatigueScore = 0.2 * rawFatigueScore + 0.8 * this.smoothedFatigueScore;
+    
+    // Rate Limiter: Max fatigue change per update = ±5
+    if (nextFatigueScore > this.smoothedFatigueScore + 5) {
+      nextFatigueScore = this.smoothedFatigueScore + 5;
+    } else if (nextFatigueScore < this.smoothedFatigueScore - 5) {
+      nextFatigueScore = this.smoothedFatigueScore - 5;
+    }
+    
+    this.smoothedFatigueScore = nextFatigueScore;
+    const fatigueScore = Math.round(this.smoothedFatigueScore);
+
 
     let fatigueLevel: FatigueState['fatigueLevel'] = 'Fresh';
     if (fatigueScore > 70) fatigueLevel = 'High Fatigue';
