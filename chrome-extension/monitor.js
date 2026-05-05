@@ -342,11 +342,17 @@ async function runHiddenFrameLoop() {
 
       if (hiddenFrameReader) {
         try {
+          const readPromise = hiddenFrameReader.read();
           const frame = await Promise.race([
-            hiddenFrameReader.read(),
-            new Promise((resolve) => setTimeout(() => resolve({ done: true }), HIDDEN_READER_TIMEOUT_MS)),
+            readPromise,
+            new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), HIDDEN_READER_TIMEOUT_MS)),
           ]);
-          if (!frame.done && frame.value) {
+
+          if (frame.timeout) {
+            // Handle late arrival to prevent VideoFrame leaks
+            readPromise.then(f => { if (f?.value) f.value.close?.(); }).catch(() => {});
+            closeHiddenTrackReader();
+          } else if (!frame.done && frame.value) {
             const videoFrame = frame.value;
             try {
               processingCtx.drawImage(videoFrame, 0, 0, processingCanvas.width, processingCanvas.height);
@@ -359,16 +365,21 @@ async function runHiddenFrameLoop() {
 
       if (!detected && imageCapture) {
         try {
+          const grabPromise = imageCapture.grabFrame();
           const bitmap = await Promise.race([
-            imageCapture.grabFrame(),
-            new Promise((resolve) => setTimeout(() => resolve(null), HIDDEN_GRAB_TIMEOUT_MS)),
+            grabPromise,
+            new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), HIDDEN_GRAB_TIMEOUT_MS)),
           ]);
-          if (bitmap) {
+          if (bitmap && !bitmap.timeout) {
             try {
               processingCtx.drawImage(bitmap, 0, 0, processingCanvas.width, processingCanvas.height);
               onFaceLandmarkerResults(faceLandmarker.detectForVideo(processingCanvas, performance.now()));
               detected = true;
             } finally { bitmap.close(); }
+          } else if (bitmap?.timeout) {
+            // Handle late arrival to prevent ImageBitmap leaks
+            grabPromise.then(b => b?.close?.()).catch(() => {});
+            imageCapture = null;
           } else { imageCapture = null; }
         } catch (err) { imageCapture = null; }
       }
