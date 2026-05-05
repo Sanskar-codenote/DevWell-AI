@@ -123,10 +123,6 @@ type AlertCallback = (
   message: string
 ) => void;
 
-// MediaPipe eye landmark indices (kept for coordinate tracking if needed)
-const LEFT_EYE = [362, 385, 387, 263, 373, 380];
-const RIGHT_EYE = [33, 160, 158, 133, 153, 144];
-
 const BLINK_MIN_MS = 50;
 const DROWSINESS_THRESHOLD_MS = 1500;
 const BLINK_REFRACTORY_MS = 80;
@@ -608,11 +604,6 @@ export class FatigueEngine {
       this.faceDetected = false;
       this.cameraStatus = 'active';
       this.lastFaceDetectedAt = Date.now();
-      this.earThreshold = DEFAULT_EAR_THRESHOLD;
-      this.openEARBaseline = 0;
-      this.earCalibrationSamples = [];
-      this.calibrationStartedAt = Date.now();
-      this.minEARDuringClosure = 1;
       this.unknownStateStartAt = 0;
       this.openStateStartAt = 0;
       this.lastBlinkAt = 0;
@@ -817,10 +808,8 @@ export class FatigueEngine {
         this.eyeClosedStart = now;
         this.closureSampleCount = 1;
         this.drowsinessCountedForCurrentClosure = false;
-        this.minEARDuringClosure = avgEAR;
       } else {
         this.closureSampleCount += 1;
-        this.minEARDuringClosure = Math.min(this.minEARDuringClosure, avgEAR);
       }
 
       // Drowsiness detection
@@ -970,7 +959,6 @@ export class FatigueEngine {
     this.eyeClosedStart = 0;
     this.closureSampleCount = 0;
     this.drowsinessCountedForCurrentClosure = false;
-    this.minEARDuringClosure = 1;
     this.openStateStartAt = 0;
   }
 
