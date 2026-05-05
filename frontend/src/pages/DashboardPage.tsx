@@ -6,7 +6,8 @@ function formatDuration(minutes: number): string {
   const h = Math.floor(minutes / 60);
   const m = Math.floor(minutes % 60);
   const s = Math.floor((minutes * 60) % 60);
-  return h > 0 ? `${h}h ${m}m ${s}s` : `${m}m ${s}s`;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  return `${m}m ${s}s`;
 }
 
 function getFatigueColor(score: number): string {
@@ -76,7 +77,7 @@ export default function DashboardPage() {
               : 'Real-time fatigue monitoring'}
           </p>
         </div>
-        {!state.isRunning ? (
+        {!state.isRunning && !extensionAvailable && (
           <button
             onClick={handleStartSession}
             disabled={isStarting}
@@ -96,7 +97,8 @@ export default function DashboardPage() {
               </>
             )}
           </button>
-        ) : (
+        )}
+        {state.isRunning && (
           <div className="flex items-center gap-2">
             {isSessionOwner && !extensionAvailable && (
               <>
@@ -375,6 +377,30 @@ export default function DashboardPage() {
               <span className="text-sm font-medium">Total Blinks</span>
             </div>
             <p className="text-2xl font-bold text-white">{state.blinkCount}</p>
+          </div>
+
+          {/* PERCLOS */}
+          <div className="bg-slate-900/60 border border-white/5 rounded-2xl p-5">
+            <div className="flex items-center gap-2 text-slate-400 mb-3">
+              <Activity className="h-4 w-4" />
+              <span className="text-sm font-medium">PERCLOS (1m)</span>
+            </div>
+            <div className="flex items-baseline gap-1.5">
+              <p className={`text-2xl font-bold ${state.perclos > 15 ? 'text-red-400' : 'text-white'}`}>
+                {state.perclos}%
+              </p>
+              <span className="text-xs text-slate-500">closure</span>
+            </div>
+            <div className="mt-2 h-1.5 bg-white/5 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-300 ${
+                  state.perclos > 15 ? 'bg-red-400' :
+                  state.perclos > 8 ? 'bg-amber-400' : 'bg-emerald-400'
+                }`}
+                style={{ width: `${Math.min(100, (state.perclos / 20) * 100)}%` }}
+              />
+            </div>
+            <p className="text-xs text-slate-500 mt-1.5">Drowsiness threshold: 15%+</p>
           </div>
 
           {/* Eye Status + Closures */}

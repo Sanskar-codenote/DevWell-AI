@@ -15,6 +15,7 @@ export interface FatigueState {
   faceDetected: boolean;
   cameraStatus: 'active' | 'inactive' | 'covered';
   lowBlinkRate: number;
+  perclos: number;
 }
 
 export interface SessionSummary extends FatigueState {
@@ -95,11 +96,15 @@ type AlertCallback = (
 // Eye Aspect Ratio calculation using 6 landmark points per eye
 function computeEAR(landmarks: FaceLandmark[], eyeIndices: number[]): number {
   const p = eyeIndices.map(i => landmarks[i]);
+  // Use z-coordinate if available, defaulting to 0 for stability
+  const dist3d = (p1: FaceLandmark, p2: FaceLandmark) => 
+    Math.hypot(p1.x - p2.x, p1.y - p2.y, (p1.z ?? 0) - (p2.z ?? 0));
+
   // Vertical distances
-  const v1 = Math.hypot(p[1].x - p[5].x, p[1].y - p[5].y);
-  const v2 = Math.hypot(p[2].x - p[4].x, p[2].y - p[4].y);
+  const v1 = dist3d(p[1], p[5]);
+  const v2 = dist3d(p[2], p[4]);
   // Horizontal distance
-  const h = Math.hypot(p[0].x - p[3].x, p[0].y - p[3].y);
+  const h = dist3d(p[0], p[3]);
   return (v1 + v2) / (2.0 * h);
 }
 
@@ -118,6 +123,7 @@ const DEFAULT_LOW_BLINK_RATE = 15;
 const BREAK_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
 const MAX_EYE_ASYMMETRY_RATIO = 1.8;
 const MIN_VALID_EYE_WIDTH = 0.018;
+const MIN_PITCH_RATIO = 0.40; // Balanced threshold for looking down
 const UNKNOWN_FRAME_RESET_MS = 2500;
 const REOPEN_STABILITY_MS = 90;
 const HIDDEN_READER_TIMEOUT_MS = 280;
@@ -127,6 +133,7 @@ const BACKGROUND_DROWSY_MIN_CLOSED_SAMPLES = 3;
 const BACKGROUND_SPARSE_GAP_MS = 700;
 const VISIBLE_FRAME_INTERVAL_MS = 66; // ~15 FPS
 const AUTO_PAUSE_THRESHOLD_MS = 20000; // 20 seconds of no face = auto-pause
+const PERCLOS_WINDOW_MS = 60 * 1000; // 1 minute rolling window for PERCLOS
 
 interface NotificationSettings {
   lowFatigueThreshold: number;
@@ -193,6 +200,11 @@ export class FatigueEngine {
   private closureSampleCount = 0;
   private lastResultAt = 0;
   private lastVisibleProcessAt = 0;
+
+  // PERCLOS tracking
+  private perclosValue = 0;
+  private eyeClosureHistory: { start: number; end: number }[] = [];
+
   private processingCanvas: HTMLCanvasElement | null = null;
   private processingCtx: CanvasRenderingContext2D | null = null;
   private cameraStream: MediaStream | null = null;
@@ -730,8 +742,19 @@ export class FatigueEngine {
     const minEyeWidth = Math.min(leftEyeWidth, rightEyeWidth);
     const maxEyeWidth = Math.max(leftEyeWidth, rightEyeWidth);
     const eyeAsymmetryRatio = maxEyeWidth / Math.max(minEyeWidth, 1e-6);
-    const unreliablePose = minEyeWidth < MIN_VALID_EYE_WIDTH || eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO;
+
+    // Pitch detection (looking down at keyboard)
+    const eyeCenterY = (landmarks[LEFT_EYE[0]].y + landmarks[RIGHT_EYE[0]].y) / 2;
+    const noseTipY = landmarks[4].y;
+    const mouthY = landmarks[13].y; // Upper lip inner
+    const headPitchRatio = (noseTipY - eyeCenterY) / Math.max(mouthY - eyeCenterY, 1e-6);
+
+    const unreliablePose = minEyeWidth < MIN_VALID_EYE_WIDTH || eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO || headPitchRatio < MIN_PITCH_RATIO;
     if (unreliablePose) {
+      // Immediate reset on unreliable pose to prevent false drowsy events
+      if (this.eyesClosed) {
+        this.resetClosureTracking();
+      }
       this.handleUnknownTrackingFrame(now);
       this.emitState();
       return;
@@ -772,6 +795,9 @@ export class FatigueEngine {
     } else {
       // Eyes are currently open
       if (this.eyesClosed) {
+        // Record closure for PERCLOS before resetting
+        this.eyeClosureHistory.push({ start: this.eyeClosedStart, end: now });
+
         // We were previously closed, track when eyes opened
         if (this.openStateStartAt === 0) {
           this.openStateStartAt = now;
@@ -827,8 +853,33 @@ export class FatigueEngine {
     this.blinkHistory = this.blinkHistory.filter(t => t > oneMinuteAgo);
     this.currentBlinkRate = this.blinkHistory.length;
 
+    // Update PERCLOS
+    this.updatePERCLOS(now);
+
     // Session average blink rate calculation moved to emitState for accurate paused time handling
     this.emitState();
+  }
+
+  private updatePERCLOS(now: number): void {
+    const windowStart = now - PERCLOS_WINDOW_MS;
+    
+    // Clean up old history
+    this.eyeClosureHistory = this.eyeClosureHistory.filter(event => event.end > windowStart);
+    
+    let totalClosedMs = 0;
+    
+    this.eyeClosureHistory.forEach(event => {
+      const effectiveStart = Math.max(event.start, windowStart);
+      totalClosedMs += (event.end - effectiveStart);
+    });
+    
+    // If eyes are currently closed, add that duration too
+    if (this.eyesClosed) {
+      const effectiveStart = Math.max(this.eyeClosedStart, windowStart);
+      totalClosedMs += (now - effectiveStart);
+    }
+    
+    this.perclosValue = (totalClosedMs / PERCLOS_WINDOW_MS) * 100;
   }
 
   private updateEARCalibration(avgEAR: number): void {
@@ -883,7 +934,6 @@ export class FatigueEngine {
       this.unknownStateStartAt = now;
     }
 
-    const closedDuration = now - this.eyeClosedStart;
     if (
       !this.isTabVisible &&
       now - this.unknownStateStartAt < UNKNOWN_FRAME_RESET_MS
@@ -891,20 +941,12 @@ export class FatigueEngine {
       return;
     }
 
-    if (
-      closedDuration >= DROWSINESS_THRESHOLD_MS &&
-      !this.drowsinessCountedForCurrentClosure
-    ) {
-      this.longClosureEvents++;
-      this.drowsinessCountedForCurrentClosure = true;
-    }
-
     if (now - this.unknownStateStartAt >= UNKNOWN_FRAME_RESET_MS) {
       // Stop stale closed-state if tracking is lost for too long.
       this.resetClosureTracking();
       this.unknownStateStartAt = 0;
     }
-  }
+    }
 
   private emitState(): void {
     const now = Date.now();
@@ -927,10 +969,18 @@ export class FatigueEngine {
     
     const blinkDeficit = sessionMinutes < 1
       ? 0
-      : Math.max(0, (lowBlinkRate - effectiveBlinkRate) / lowBlinkRate) * 35;
-    const closurePenalty = Math.min(this.longClosureEvents * 12, 36);
+      : Math.max(0, (lowBlinkRate - effectiveBlinkRate) / lowBlinkRate) * 30;
+
+    // closurePenalty now driven primarily by PERCLOS (time eyes are closed)
+    // plus a small weight for discrete "microsleep" events.
+    // 15% PERCLOS is the standard drowsiness threshold.
+    const perclosWeight = (this.perclosValue / 15) * 60;
+    const acuteClosureWeight = Math.min(this.longClosureEvents * 5, 20);
+    const closurePenalty = Math.min(perclosWeight + acuteClosureWeight, 80);
+
     // Let fatigue grow gradually with session duration after a short grace period.
-    const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 40, 40);
+    const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 20, 20);
+    
     const fatigueScore = Math.min(100, Math.max(0, blinkDeficit + closurePenalty + durationPenalty));
 
     let fatigueLevel: FatigueState['fatigueLevel'] = 'Fresh';
@@ -968,8 +1018,9 @@ export class FatigueEngine {
       isAutoPaused: this.isAutoPaused,
       faceDetected: this.faceDetected,
       cameraStatus: this.cameraStatus,
-      lowBlinkRate: lowBlinkRate,
-    });
+      lowBlinkRate: settings.lowBlinkRate,
+      perclos: Math.round(this.perclosValue * 10) / 10,
+    };
   }
 
   stop(): SessionSummary {

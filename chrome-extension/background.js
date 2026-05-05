@@ -290,7 +290,8 @@ class DevWellBackground {
         blinkRate: sessionData.sessionAvgBlinkRate || 0,
         blinkCount: sessionData.blinkCount || 0,
         fatigueScore: sessionData.fatigueScore || 0,
-        drowsyEvents: sessionData.longClosureEvents || 0
+        drowsyEvents: sessionData.longClosureEvents || 0,
+        perclos: sessionData.perclos || 0
       };
       
       // Add to beginning of array to show newest first

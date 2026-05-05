@@ -80,12 +80,14 @@ function updateStatsGrid(sessions) {
   const totalTimeDisplay = Number(totalTime.toFixed(1));
   const avgFatigue = totalSessions > 0 ? (sessions.reduce((sum, s) => sum + (s.fatigueScore || 0), 0) / totalSessions).toFixed(1) : 0;
   const avgBlinkRate = totalSessions > 0 ? (sessions.reduce((sum, s) => sum + (s.blinkRate || 0), 0) / totalSessions).toFixed(1) : 0;
+  const avgPerclos = totalSessions > 0 ? (sessions.reduce((sum, s) => sum + (s.perclos || 0), 0) / totalSessions).toFixed(1) : 0;
   
   // Update DOM elements
   document.getElementById('avgFatigue').textContent = avgFatigue;
   document.getElementById('avgBlinkRate').textContent = avgBlinkRate;
   document.getElementById('totalSessions').textContent = totalSessions;
   document.getElementById('totalTime').textContent = totalTimeDisplay;
+  document.getElementById('avgPerclos').textContent = avgPerclos;
   
   // Calculate fatigue change (simple trend)
   if (totalSessions >= 2) {

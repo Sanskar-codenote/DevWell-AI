@@ -9,20 +9,24 @@ This document provides a deep dive into the technical architecture, deployment s
 ```
 Camera Stream → MediaPipe Face Mesh → Eye Landmarks → EAR Calculation
                         ↓
-                  Blink Detection (50ms - 1500ms)
+          ┌─────────────┴─────────────┐
+          ↓                           ↓
+    Blink Detection            PERCLOS Tracking
+    (50ms - 1500ms)            (60s rolling window)
+          ↓                           ↓
+    Drowsiness Event           Fatigue Score Calculation
+    (≥1500ms / Microsleep)     (Multi-factor Weighted Sum)
                         ↓
-                  Drowsiness Event (≥1500ms)
-                        ↓
-                  Fatigue Score Calculation
-                        ↓
-                  Classification + Notifications
+          Classification + Notifications
 ```
 
 | Parameter | Default Value | Description |
 |-----------|---------------|-------------|
 | Blink Duration | 50ms - <1500ms | Valid blink window |
-| Drowsiness Threshold | ≥1500ms | Long-eye-closure event |
-| Refractory Period | Configurable | Prevents duplicate detections |
+| Drowsiness Threshold | ≥1500ms | Long-eye-closure event (Microsleep) |
+| PERCLOS Window | 60 seconds | Rolling window for closure percentage |
+| Drowsiness PERCLOS | 15% | Standard threshold for high fatigue |
+| Refractory Period | 80ms | Prevents duplicate detections |
 | Processing FPS | 30 (visible), 2 (hidden) | Background tab throttling |
 
 ### Database Schema (PostgreSQL)
@@ -56,6 +60,23 @@ DevWell provides two modes of operation to balance privacy and convenience:
 ---
 
 ## 🧠 Session Management & Fatigue Logic
+
+### Fatigue Scoring Algorithm (0-100)
+The fatigue score is a multi-factor weighted sum designed to provide a scientifically grounded assessment of developer alertness.
+
+| Factor | Max Weight | Logic |
+|--------|------------|-------|
+| **PERCLOS** | 60 pts | Primary driver. Normalized against 15% (drowsiness threshold). |
+| **Blink Deficit** | 30 pts | Penalty if current blink rate falls below user-defined threshold. |
+| **Acute Closures** | 20 pts | Penalty for discrete long-closure events (microsleeps). |
+| **Duration** | 20 pts | Gradual fatigue accumulation based on session active time. |
+
+*Note: The total score is capped at 100.*
+
+### Robustness & False Positive Mitigation
+- **3D EAR Calculation:** Uses `Math.hypot(Δx, Δy, Δz)` to calculate eye aspect ratio, reducing sensitivity to head tilts and perspective compression.
+- **Head Pitch Protection:** Specifically detects when a user looks down (e.g., at a keyboard) using the ratio of nose-to-eye vs mouth-to-eye distance.
+- **Immediate State Reset:** If an unreliable pose (extreme tilt or looking down) is detected, the engine instantly resets closure tracking to prevent false "Long Closure" or high PERCLOS readings.
 
 ### Pause, Break, and Auto-Pause
 DevWell incorporates robust session management to ensure fatigue scores are not artificially inflated during breaks or interruptions.

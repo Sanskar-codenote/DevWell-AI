@@ -46,6 +46,7 @@ class DevWellPopup {
     this.elements.blinkRate = document.getElementById('blinkRate');
     this.elements.totalBlinks = document.getElementById('totalBlinks');
     this.elements.drowsyEvents = document.getElementById('drowsyEvents');
+    this.elements.perclos = document.getElementById('perclos');
     this.elements.fatigueScore = document.getElementById('fatigueScore');
     this.elements.fatigueLevel = document.getElementById('fatigueLevel');
     this.elements.progressFill = document.getElementById('progressFill');
@@ -434,6 +435,10 @@ class DevWellPopup {
 
     if (this.elements.drowsyEvents) {
       this.elements.drowsyEvents.textContent = String(drowsyEvents);
+    }
+
+    if (this.elements.perclos) {
+      this.elements.perclos.textContent = `${this.sessionData?.perclos ?? 0}%`;
     }
 
     if (this.elements.fatigueScore) {

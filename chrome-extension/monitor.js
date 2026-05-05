@@ -13,6 +13,7 @@ const HIDDEN_LOOP_INTERVAL_MS = 150;
 const VISIBLE_FRAME_INTERVAL_MS = 100;
 const UNKNOWN_FRAME_RESET_MS = 2500;
 const BACKGROUND_SPARSE_GAP_MS = 700;
+const PERCLOS_WINDOW_MS = 60000;
 
 let sessionActive = false;
 let isStarting = false;
@@ -41,6 +42,7 @@ let isAutoPaused = false;
 let totalPausedTime = 0;
 let pauseStartAt = 0;
 let faceDetected = false;
+let drowsinessCounted = false;
 let cameraStatus = 'inactive';
 let lastFaceDetectedAt = 0;
 const processingCanvas = document.createElement('canvas');
@@ -55,6 +57,8 @@ let lowBlinkRate = 15;
 let earCalibrationSamples = [];
 const CALIBRATION_SAMPLES_REQUIRED = 30;
 let openStateStartAt = 0;
+let perclosValue = 0;
+let eyeClosureHistory = [];
 
 document.addEventListener('visibilitychange', () => {
   const wasVisible = isTabVisible;
@@ -73,9 +77,12 @@ document.addEventListener('visibilitychange', () => {
 
 function computeEAR(landmarks, eyeIndices) {
   const p = eyeIndices.map((i) => landmarks[i]);
-  const v1 = Math.hypot(p[1].x - p[5].x, p[1].y - p[5].y);
-  const v2 = Math.hypot(p[2].x - p[4].x, p[2].y - p[4].y);
-  const h = Math.hypot(p[0].x - p[3].x, p[0].y - p[3].y);
+  const dist3d = (p1, p2) => 
+    Math.hypot(p1.x - p2.x, p1.y - p2.y, (p1.z || 0) - (p2.z || 0));
+
+  const v1 = dist3d(p[1], p[5]);
+  const v2 = dist3d(p[2], p[4]);
+  const h = dist3d(p[0], p[3]);
   return (v1 + v2) / (2.0 * h);
 }
 
@@ -155,9 +162,13 @@ async function resumeSession() {
 
 function calculateFatigueScore(sessionMinutes, blinkRate) {
   if (sessionMinutes < 1) return 0;
-  const blinkDeficit = Math.max(0, (lowBlinkRate - blinkRate) / lowBlinkRate) * 35;
-  const closurePenalty = Math.min(longClosureEvents * 12, 36);
-  const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 40, 40);
+  const blinkDeficit = Math.max(0, (lowBlinkRate - blinkRate) / lowBlinkRate) * 30;
+  
+  const perclosWeight = (perclosValue / 15) * 60;
+  const acuteClosureWeight = Math.min(longClosureEvents * 5, 20);
+  const closurePenalty = Math.min(perclosWeight + acuteClosureWeight, 80);
+  
+  const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 20, 20);
   return Math.min(100, Math.max(0, blinkDeficit + closurePenalty + durationPenalty));
 }
 
@@ -197,23 +208,29 @@ function buildSessionData() {
     faceDetected,
     cameraStatus,
     eyesOpen: !eyesClosed,
+    perclos: Math.round(perclosValue * 10) / 10,
   };
 }
 
-function resetSessionCounters() {
-  blinkCount = 0;
-  longClosureEvents = 0;
-  blinkHistory = [];
-  lastBlinkTime = 0;
-  eyesClosed = false;
-  eyeClosedStart = 0;
-  openStateStartAt = 0;
-  earThreshold = DEFAULT_EAR_THRESHOLD;
-  earCalibrationSamples = [];
-  unknownStateStartAt = 0;
-  lastResultAt = 0;
-  closureSampleCount = 0;
+function updatePERCLOS(now) {
+  const windowStart = now - PERCLOS_WINDOW_MS;
+  eyeClosureHistory = eyeClosureHistory.filter(event => event.end > windowStart);
+  
+  let totalClosedMs = 0;
+  eyeClosureHistory.forEach(event => {
+    const effectiveStart = Math.max(event.start, windowStart);
+    totalClosedMs += (event.end - effectiveStart);
+  });
+  
+  if (eyesClosed) {
+    const effectiveStart = Math.max(eyeClosedStart, windowStart);
+    totalClosedMs += (now - effectiveStart);
+  }
+  
+  perclosValue = (totalClosedMs / PERCLOS_WINDOW_MS) * 100;
 }
+
+// Moved to the bottom of the file
 
 function clearFrameLoopHandles() {
   if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
@@ -376,6 +393,26 @@ async function startSession() {
   }
 }
 
+function resetSessionCounters() {
+  blinkCount = 0;
+  longClosureEvents = 0;
+  blinkHistory = [];
+  lastBlinkTime = 0;
+  earThreshold = DEFAULT_EAR_THRESHOLD;
+  earCalibrationSamples = [];
+  lastResultAt = 0;
+  resetClosureTracking();
+}
+
+function resetClosureTracking() {
+  eyesClosed = false;
+  eyeClosedStart = 0;
+  closureSampleCount = 0;
+  drowsinessCounted = false;
+  openStateStartAt = 0;
+  unknownStateStartAt = 0;
+}
+
 function handleUnknownTrackingFrame(now) {
   const noFaceDuration = now - lastFaceDetectedAt;
   if (noFaceDuration >= AUTO_PAUSE_THRESHOLD_MS && !isPaused) {
@@ -389,18 +426,14 @@ function handleUnknownTrackingFrame(now) {
   const isBackground = !isTabVisible;
   if (isBackground && (now - unknownStateStartAt < UNKNOWN_FRAME_RESET_MS)) return;
 
-  const closedDuration = now - eyeClosedStart;
-  if (closedDuration >= DROWSINESS_THRESHOLD_MS) {
-    longClosureEvents += 1;
-  }
-
   if (now - unknownStateStartAt >= UNKNOWN_FRAME_RESET_MS) {
-    eyesClosed = false;
-    eyeClosedStart = 0;
-    unknownStateStartAt = 0;
-    closureSampleCount = 0;
+    resetClosureTracking();
   }
 }
+
+const MAX_EYE_ASYMMETRY_RATIO = 1.8;
+const MIN_VALID_EYE_WIDTH = 0.018;
+const MIN_PITCH_RATIO = 0.40;
 
 function onFaceLandmarkerResults(results) {
   const now = Date.now();
@@ -424,18 +457,43 @@ function onFaceLandmarkerResults(results) {
     return;
   }
 
+  const landmarks = results.faceLandmarks[0];
+  
+  // Pose reliability check
+  const leftEyeWidth = Math.hypot(landmarks[LEFT_EYE[0]].x - landmarks[LEFT_EYE[3]].x, landmarks[LEFT_EYE[0]].y - landmarks[LEFT_EYE[3]].y);
+  const rightEyeWidth = Math.hypot(landmarks[RIGHT_EYE[0]].x - landmarks[RIGHT_EYE[3]].x, landmarks[RIGHT_EYE[0]].y - landmarks[RIGHT_EYE[3]].y);
+  const minEyeWidth = Math.min(leftEyeWidth, rightEyeWidth);
+  const maxEyeWidth = Math.max(leftEyeWidth, rightEyeWidth);
+  const eyeAsymmetryRatio = maxEyeWidth / Math.max(minEyeWidth, 1e-6);
+  
+  // Pitch detection (looking down at keyboard)
+  const eyeCenterY = (landmarks[LEFT_EYE[0]].y + landmarks[RIGHT_EYE[0]].y) / 2;
+  const noseTipY = landmarks[4].y;
+  const mouthY = landmarks[13].y; // Upper lip inner
+  const headPitchRatio = (noseTipY - eyeCenterY) / Math.max(mouthY - eyeCenterY, 1e-6);
+
+  if (minEyeWidth < MIN_VALID_EYE_WIDTH || eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO || headPitchRatio < MIN_PITCH_RATIO) {
+    if (eyesClosed) {
+      resetClosureTracking();
+    }
+    handleUnknownTrackingFrame(now);
+    return;
+  }
+
   unknownStateStartAt = 0;
   const frameGap = lastResultAt > 0 ? now - lastResultAt : 0;
   lastResultAt = now;
 
-  const landmarks = results.faceLandmarks[0];
-  const avgEAR = (computeEAR(landmarks, LEFT_EYE) + computeEAR(landmarks, RIGHT_EYE)) / 2;
+  const leftEAR = computeEAR(landmarks, LEFT_EYE);
+  const rightEAR = computeEAR(landmarks, RIGHT_EYE);
+  const avgEAR = (leftEAR + rightEAR) / 2;
 
   if (earCalibrationSamples.length < CALIBRATION_SAMPLES_REQUIRED) {
     updateEARCalibration(avgEAR);
   }
 
-  const eyesCurrentlyClosed = avgEAR < earThreshold;
+  // Symmetry check for closing
+  const eyesCurrentlyClosed = avgEAR < earThreshold && Math.max(leftEAR, rightEAR) < earThreshold * 1.08;
   const isBackground = !isTabVisible;
 
   if (eyesCurrentlyClosed) {
@@ -452,6 +510,9 @@ function onFaceLandmarkerResults(results) {
     const stableEnough = (now - openStateStartAt >= REOPEN_STABILITY_MS) || isBackground;
     
     if (stableEnough) {
+      // Record for PERCLOS
+      eyeClosureHistory.push({ start: eyeClosedStart, end: now });
+
       const closedDuration = now - eyeClosedStart;
       
       const sparseBackgroundClosure = isBackground && 
@@ -466,19 +527,27 @@ function onFaceLandmarkerResults(results) {
           lastBlinkTime = now;
         }
       } else if (closedDuration >= DROWSINESS_THRESHOLD_MS) {
-        longClosureEvents += 1;
-      } else if (closedDuration >= BLINK_MIN_MS) {
+        if (!drowsinessCounted) {
+          longClosureEvents += 1;
+          drowsinessCounted = true;
+        }
+      } 
+
+      if (closedDuration >= BLINK_MIN_MS && closedDuration < DROWSINESS_THRESHOLD_MS) {
         if (now - lastBlinkTime >= BLINK_REFRACTORY_MS) {
-          blinkCount += 1;
-          blinkHistory.push(now);
-          lastBlinkTime = now;
+          // If tab is backgrounded, require more closure samples to confirm a blink
+          if (!isBackground || closureSampleCount >= 3) {
+            blinkCount += 1;
+            blinkHistory.push(now);
+            lastBlinkTime = now;
+          }
         }
       }
-      eyesClosed = false;
-      closureSampleCount = 0;
-      openStateStartAt = 0;
+
+      resetClosureTracking();
     }
   }
+  updatePERCLOS(now);
 }
 
 let lastVideoTime = -1;
