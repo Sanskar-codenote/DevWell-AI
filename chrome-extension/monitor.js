@@ -224,7 +224,10 @@ function updatePERCLOS(now) {
   
   if (eyesClosed) {
     const effectiveStart = Math.max(eyeClosedStart, windowStart);
-    totalClosedMs += (now - effectiveStart);
+    const effectiveEnd = openStateStartAt > 0 ? openStateStartAt : now;
+    if (effectiveEnd > effectiveStart) {
+      totalClosedMs += (effectiveEnd - effectiveStart);
+    }
   }
   
   perclosValue = (totalClosedMs / PERCLOS_WINDOW_MS) * 100;
@@ -514,10 +517,10 @@ function onFaceLandmarkerResults(results) {
     const stableEnough = (now - openStateStartAt >= REOPEN_STABILITY_MS) || isBackground;
     
     if (stableEnough) {
-      // Record for PERCLOS
-      eyeClosureHistory.push({ start: eyeClosedStart, end: now });
+      // Record for PERCLOS using the true end time of the closure
+      eyeClosureHistory.push({ start: eyeClosedStart, end: openStateStartAt });
 
-      const closedDuration = now - eyeClosedStart;
+      const closedDuration = openStateStartAt - eyeClosedStart;
       
       const sparseBackgroundClosure = isBackground && 
         closedDuration >= DROWSINESS_THRESHOLD_MS && 

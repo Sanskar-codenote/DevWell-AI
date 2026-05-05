@@ -798,9 +798,6 @@ export class FatigueEngine {
     } else {
       // Eyes are currently open
       if (this.eyesClosed) {
-        // Record closure for PERCLOS before resetting
-        this.eyeClosureHistory.push({ start: this.eyeClosedStart, end: now });
-
         // We were previously closed, track when eyes opened
         if (this.openStateStartAt === 0) {
           this.openStateStartAt = now;
@@ -810,12 +807,17 @@ export class FatigueEngine {
         const timeSinceOpen = now - this.openStateStartAt;
         if (timeSinceOpen < REOPEN_STABILITY_MS && !isBackground) {
           // Still waiting for stability, just emit state and continue tracking
+          this.updatePERCLOS(now);
           this.emitState();
           return;
         }
 
+        // Record closure for PERCLOS ONLY ONCE after stability is confirmed.
+        // Use openStateStartAt as the true end time of the closure.
+        this.eyeClosureHistory.push({ start: this.eyeClosedStart, end: this.openStateStartAt });
+
         // Stability period passed, classify the closure event
-        const closureDuration = now - this.eyeClosedStart;
+        const closureDuration = this.openStateStartAt - this.eyeClosedStart;
         
         const sparseBackgroundClosure =
           isBackground &&
@@ -876,10 +878,15 @@ export class FatigueEngine {
       totalClosedMs += (event.end - effectiveStart);
     });
     
-    // If eyes are currently closed, add that duration too
+    // If a closure is currently ongoing (or waiting for stability), add its duration
     if (this.eyesClosed) {
       const effectiveStart = Math.max(this.eyeClosedStart, windowStart);
-      totalClosedMs += (now - effectiveStart);
+      // If openStateStartAt > 0, the eye is open but we're waiting for stability.
+      // The closure effectively ended at openStateStartAt.
+      const effectiveEnd = this.openStateStartAt > 0 ? this.openStateStartAt : now;
+      if (effectiveEnd > effectiveStart) {
+        totalClosedMs += (effectiveEnd - effectiveStart);
+      }
     }
     
     this.perclosValue = (totalClosedMs / PERCLOS_WINDOW_MS) * 100;
