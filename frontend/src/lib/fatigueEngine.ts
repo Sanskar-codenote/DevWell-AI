@@ -743,30 +743,34 @@ export class FatigueEngine {
     const maxEyeWidth = Math.max(leftEyeWidth, rightEyeWidth);
     const eyeAsymmetryRatio = maxEyeWidth / Math.max(minEyeWidth, 1e-6);
 
-    // Pitch detection (looking down at keyboard)
-    const eyeCenterY = (landmarks[LEFT_EYE[0]].y + landmarks[RIGHT_EYE[0]].y) / 2;
-    const noseTipY = landmarks[4].y;
-    const mouthY = landmarks[13].y; // Upper lip inner
-    const headPitchRatio = (noseTipY - eyeCenterY) / Math.max(mouthY - eyeCenterY, 1e-6);
-
-    const unreliablePose = minEyeWidth < MIN_VALID_EYE_WIDTH || eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO || headPitchRatio < MIN_PITCH_RATIO;
-    if (unreliablePose) {
-      // Immediate reset on unreliable pose to prevent false drowsy events
-      if (this.eyesClosed) {
-        this.resetClosureTracking();
-      }
-      this.handleUnknownTrackingFrame(now);
-      this.emitState();
-      return;
-    }
-    this.unknownStateStartAt = 0;
-
     const frameGap = this.lastResultAt > 0 ? now - this.lastResultAt : 0;
     this.lastResultAt = now;
     const isBackground = !this.isTabVisible;
     const eyesCurrentlyClosed =
       avgEAR < this.earThreshold &&
       Math.max(leftEAR, rightEAR) < this.earThreshold * 1.08;
+
+    // Pitch detection (looking down at keyboard)
+    const eyeCenterY = (landmarks[LEFT_EYE[0]].y + landmarks[RIGHT_EYE[0]].y) / 2;
+    const noseTipY = landmarks[4].y;
+    const mouthY = landmarks[13].y; // Upper lip inner
+    const headPitchRatio = (noseTipY - eyeCenterY) / Math.max(mouthY - eyeCenterY, 1e-6);
+
+    // Stricter pitch threshold when eyes look closed to catch keyboard entry early
+    const dynamicPitchThreshold = eyesCurrentlyClosed ? 0.48 : 0.42;
+
+    const unreliablePose = minEyeWidth < MIN_VALID_EYE_WIDTH || eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO || headPitchRatio < dynamicPitchThreshold;
+    if (unreliablePose) {
+      // Immediate reset on unreliable pose to prevent false drowsy events
+      if (this.eyesClosed) {
+        this.resetClosureTracking();
+      }
+      this.handleUnknownTrackingFrame(now);
+      this.updatePERCLOS(now);
+      this.emitState();
+      return;
+    }
+    this.unknownStateStartAt = 0;
 
     if (eyesCurrentlyClosed) {
       this.openStateStartAt = 0;
