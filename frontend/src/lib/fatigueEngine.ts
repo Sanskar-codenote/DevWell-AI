@@ -123,7 +123,6 @@ const DEFAULT_LOW_BLINK_RATE = 15;
 const BREAK_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
 const MAX_EYE_ASYMMETRY_RATIO = 1.8;
 const MIN_VALID_EYE_WIDTH = 0.018;
-const MIN_PITCH_RATIO = 0.40; // Balanced threshold for looking down
 const UNKNOWN_FRAME_RESET_MS = 2500;
 const REOPEN_STABILITY_MS = 90;
 const HIDDEN_READER_TIMEOUT_MS = 280;
@@ -1024,7 +1023,7 @@ export class FatigueEngine {
       cameraStatus: this.cameraStatus,
       lowBlinkRate: settings.lowBlinkRate,
       perclos: Math.round(this.perclosValue * 10) / 10,
-    };
+    });
   }
 
   stop(): SessionSummary {
@@ -1055,9 +1054,12 @@ export class FatigueEngine {
 
     const blinkDeficit = sessionMinutes < 1
       ? 0
-      : Math.max(0, (lowBlinkRate - this.currentBlinkRate) / lowBlinkRate) * 35;
-    const closurePenalty = Math.min(this.longClosureEvents * 12, 36);
-    const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 40, 40);
+      : Math.max(0, (lowBlinkRate - this.currentBlinkRate) / lowBlinkRate) * 30;
+
+    const perclosWeight = (this.perclosValue / 15) * 60;
+    const acuteClosureWeight = Math.min(this.longClosureEvents * 5, 20);
+    const closurePenalty = Math.min(perclosWeight + acuteClosureWeight, 80);
+    const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 20, 20);
     const fatigueScore = Math.min(100, Math.max(0, blinkDeficit + closurePenalty + durationPenalty));
 
     let fatigueLevel: FatigueState['fatigueLevel'] = 'Fresh';
@@ -1080,6 +1082,7 @@ export class FatigueEngine {
       faceDetected: this.faceDetected,
       cameraStatus: this.cameraStatus,
       lowBlinkRate: lowBlinkRate,
+      perclos: Math.round(this.perclosValue * 10) / 10,
       sessionDate: new Date().toISOString().split('T')[0],
     };
   }

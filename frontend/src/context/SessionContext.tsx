@@ -45,6 +45,7 @@ const defaultState: FatigueState = {
   faceDetected: false,
   cameraStatus: 'inactive',
   lowBlinkRate: getInitialLowBlinkRate(),
+  perclos: 0,
 };
 
 interface Alert {
