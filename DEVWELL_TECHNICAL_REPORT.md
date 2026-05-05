@@ -7,12 +7,12 @@ This document provides a deep dive into the technical architecture, deployment s
 ### Detection Pipeline
 
 ```
-Camera Stream → MediaPipe Face Mesh → Eye Landmarks → EAR Calculation
+Camera Stream → MediaPipe Face Mesh → Blendshapes & Landmarks
                         ↓
           ┌─────────────┴─────────────┐
           ↓                           ↓
     Blink Detection            PERCLOS Tracking
-    (50ms - 1500ms)            (60s rolling window)
+    (Blendshape Score > 0.5)   (60s rolling window)
           ↓                           ↓
     Drowsiness Event           Fatigue Score Calculation
     (≥1500ms / Microsleep)     (Multi-factor Weighted Sum)
@@ -22,12 +22,12 @@ Camera Stream → MediaPipe Face Mesh → Eye Landmarks → EAR Calculation
 
 | Parameter | Default Value | Description |
 |-----------|---------------|-------------|
-| Blink Duration | 50ms - <1500ms | Valid blink window |
+| Eye Closure Threshold | > 0.5 | Blendshape score threshold for "eyes closed" |
 | Drowsiness Threshold | ≥1500ms | Long-eye-closure event (Microsleep) |
 | PERCLOS Window | 60 seconds | Rolling window for closure percentage |
-| Drowsiness PERCLOS | 15% | Standard threshold for high fatigue |
+| High Fatigue (PERCLOS) | 25% | Revised threshold for high fatigue contribution |
 | Refractory Period | 80ms | Prevents duplicate detections |
-| Processing FPS | 30 (visible), 2 (hidden) | Background tab throttling |
+| Head Pitch Limit | -20° to +30° | Valid attention range before state reset |
 
 ### Database Schema (PostgreSQL)
 
@@ -62,21 +62,50 @@ DevWell provides two modes of operation to balance privacy and convenience:
 ## 🧠 Session Management & Fatigue Logic
 
 ### Fatigue Scoring Algorithm (0-100)
-The fatigue score is a multi-factor weighted sum designed to provide a scientifically grounded assessment of developer alertness.
+The fatigue score is a multi-factor weighted sum designed to provide a scientifically grounded assessment of developer alertness, dynamically adapting to each user.
 
 | Factor | Max Weight | Logic |
 |--------|------------|-------|
-| **PERCLOS** | 60 pts | Primary driver. Normalized against 15% (drowsiness threshold). |
-| **Blink Deficit** | 30 pts | Penalty if current blink rate falls below user-defined threshold. |
-| **Acute Closures** | 20 pts | Penalty for discrete long-closure events (microsleeps). |
-| **Duration** | 20 pts | Gradual fatigue accumulation based on session active time. |
+| **PERCLOS (Sigmoid)** | 25 pts | Primary driver. Normalized against a 25% window and scaled using a Sigmoid curve for a natural progression. |
+| **Relative Blink Deficit**| 30 pts | Penalty calculated against a **Personalized Baseline** (learned in the first 3 minutes of a session). |
+| **Blink Variability** | 15 pts | Penalty based on the Standard Deviation of recent blink intervals, detecting erratic blinking patterns. |
+| **Acute Closures** | 15 pts | Penalty for discrete long-closure events (microsleeps). |
+| **Duration (Exp)** | 20 pts | Exponential fatigue accumulation based on session active time. |
+| **Micro-Bursts** | 10 pts | Penalty for rapid, successive bursts of closures within a 10-second window. |
 
-*Note: The total score is capped at 100.*
+*Note: The total score is capped at 100 and smoothed via a Momentum-Based Physiological Model (with active recovery when alert).*
 
 ### Robustness & False Positive Mitigation
-- **3D EAR Calculation:** Uses `Math.hypot(Δx, Δy, Δz)` to calculate eye aspect ratio, reducing sensitivity to head tilts and perspective compression.
-- **Head Pitch Protection:** Specifically detects when a user looks down (e.g., at a keyboard) using the ratio of nose-to-eye vs mouth-to-eye distance.
-- **Immediate State Reset:** If an unreliable pose (extreme tilt or looking down) is detected, the engine instantly resets closure tracking to prevent false "Long Closure" or high PERCLOS readings.
+
+The DevWell engine utilizes a combination of 3D physical geometry and AI expression analysis to provide accurate fatigue tracking while rejecting noise.
+
+#### 1. Head Pitch (Up/Down Detection)
+*   **What we check:** The vertical tilt of the head (pitch) to determine if the user is looking at their screen, tucked down (e.g., looking at a keyboard), or tilted too far back.
+*   **How we check it:**
+    *   We use three anchor landmarks: **Chin** (152), **Forehead** (10), and the **Nose**.
+    *   Treating the face as a 3D vector, we calculate the difference in height (Y-axis) and depth (Z-axis) between the forehead and the chin.
+    *   Using `Math.atan2(deltaZ, deltaY)`, we extract the true angle of the face relative to the camera in degrees.
+    *   **Rules:** If the angle is **> 25°**, the state becomes `LOOKING_DOWN`. If the angle is extreme (**> 30° or < -20°**), the frame is rejected entirely as "unstable."
+
+#### 2. Eye Closure (Blendshape Detection)
+*   **What we check:** We use "Blendshapes" (high-level AI classifications of facial expressions) rather than measuring raw distances between eyelids, making it highly resistant to perspective distortion.
+*   **How we check it:**
+    *   We evaluate the `eyeBlinkLeft` and `eyeBlinkRight` categories from the Face Landmarker, which range from **0.0** (fully open) to **1.0** (fully closed).
+    *   **Rules:** We require **both** eyes to have a score **> 0.5** to count as "Closed." This prevents winking or natural asymmetrical squinting from being miscounted.
+    *   **Noise Filtering:** A closure is only recorded for PERCLOS calculation if it lasts at least **200ms** and is captured across at least **3 consecutive frames**.
+
+#### 3. Attention State Machine (Hysteresis & Gating)
+*   **What we check:** We determine if the incoming data stream is clean enough to be used for accurate tracking.
+*   **How we check it:**
+    *   **Hysteresis (800ms):** If a user looks down briefly, the system remains in `ATTENTIVE`. The pose must be held for a full **800ms** before officially switching to `LOOKING_DOWN` or `FACE_LOST`.
+    *   **Hard Data Gating:** The moment the state leaves `ATTENTIVE`, a hard reset is triggered. The current rolling window of eye closures is wiped, and PERCLOS is zeroed out. This ensures that partially closed eyes detected while looking down at a phone do not artificially inflate the fatigue score.
+
+#### 4. PERCLOS (Drowsiness Metric)
+*   **What we check:** The "Percentage of Eye Closure" over a rolling 60-second window.
+*   **How we check it:**
+    *   The `start` and `end` timestamps of every valid blink/closure are recorded.
+    *   We sum the total milliseconds the eyes were closed in the last 60 seconds and divide by 60,000ms.
+    *   **Rules:** If the eyes are closed for **25%** of a minute, the PERCLOS weight hits its maximum value (40 pts), signaling high drowsiness.
 
 ### Pause, Break, and Auto-Pause
 DevWell incorporates robust session management to ensure fatigue scores are not artificially inflated during breaks or interruptions.

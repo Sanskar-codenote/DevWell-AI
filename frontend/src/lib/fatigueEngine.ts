@@ -43,6 +43,12 @@ interface FaceLandmarkerResults {
   faceLandmarks?: FaceLandmark[][];
 }
 
+interface FaceLandmarkerBlendshapesResult extends FaceLandmarkerResults {
+  faceBlendshapes?: {
+    categories: Blendshape[]
+  }[];
+}
+
 interface FaceLandmarkerInstance {
   detectForVideo: (image: CanvasImageSource, timestampMs: number) => FaceLandmarkerResults;
   close: () => void;
@@ -80,6 +86,26 @@ interface FaceLandmarkerStatic {
 interface VisionBundleModule {
   FaceLandmarker: FaceLandmarkerStatic;
   FilesetResolver: FilesetResolverStatic;
+}
+
+interface Blendshape {
+  categoryName: string;
+  score: number;
+}
+
+function getBlendshapeScore(blendshapes: Blendshape[], name: string): number {
+  return blendshapes.find(b => b.categoryName === name)?.score ?? 0;
+}
+
+function calculateHeadPitch(landmarks: FaceLandmark[]): number {
+  const chin = landmarks[152];
+  const forehead = landmarks[10];
+
+  const faceVectorY = chin.y - forehead.y;
+  const faceVectorZ = (chin.z ?? 0) - (forehead.z ?? 0);
+
+  const pitchRad = Math.atan2(faceVectorZ, faceVectorY);
+  return pitchRad * (180 / Math.PI);
 }
 
 let visionBundlePromise: Promise<VisionBundleModule> | null = null;
@@ -125,8 +151,6 @@ const DROWSINESS_THRESHOLD_MS = 1500;
 const BLINK_REFRACTORY_MS = 80;
 const DEFAULT_LOW_BLINK_RATE = 15;
 const BREAK_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
-const MAX_EYE_ASYMMETRY_RATIO = 1.8;
-const MIN_VALID_EYE_WIDTH = 0.012;
 const UNKNOWN_FRAME_RESET_MS = 2500;
 const REOPEN_STABILITY_MS = 90;
 const HIDDEN_READER_TIMEOUT_MS = 280;
@@ -212,6 +236,12 @@ export class FatigueEngine {
   private currentState: AttentionState = 'FACE_LOST';
   private smoothedFatigueScore = 0;
   private lastFatigueSmoothAt = 0;
+  private stateHoldStart = 0;
+  private pendingState: AttentionState = 'FACE_LOST';
+
+  private blinkIntervals: number[] = [];
+  private recentClosures: number[] = [];
+  private baselineBlinkRate = 0;
 
   private processingCanvas: HTMLCanvasElement | null = null;
   private processingCtx: CanvasRenderingContext2D | null = null;
@@ -271,7 +301,7 @@ export class FatigueEngine {
     if (!wasAutoPaused) {
       try {
         await this.startCamera();
-      } catch (err) {
+      } catch {
         this.onAlert('error', 'Failed to restart camera.');
         this.pause(false);
         return;
@@ -299,8 +329,8 @@ export class FatigueEngine {
           console.log('[DevWell] Wake Lock released');
         });
       }
-    } catch (err) {
-      console.warn('[DevWell] Failed to acquire Wake Lock:', err);
+    } catch {
+      console.warn('[DevWell] Failed to acquire Wake Lock:');
     }
   }
 
@@ -398,8 +428,8 @@ export class FatigueEngine {
 
     try {
       return new ImageCaptureCtor(track);
-    } catch (err) {
-      console.warn('[DevWell] ImageCapture unavailable for this camera track:', err);
+    } catch {
+      console.warn('[DevWell] ImageCapture unavailable for this camera track:');
       return null;
     }
   }
@@ -419,8 +449,8 @@ export class FatigueEngine {
     try {
       const processor = new ProcessorCtor({ track });
       return processor.readable.getReader();
-    } catch (err) {
-      console.warn('[DevWell] MediaStreamTrackProcessor unavailable for this track:', err);
+    } catch {
+      console.warn('[DevWell] MediaStreamTrackProcessor unavailable for this track:');
       return null;
     }
   }
@@ -468,8 +498,8 @@ export class FatigueEngine {
         videoFrame.close?.();
       }
       return true;
-    } catch (err) {
-      console.warn('[DevWell] Hidden track reader failed, switching source:', err);
+    } catch {
+      console.warn('[DevWell] Hidden track reader failed, switching source:');
       this.closeHiddenTrackReader();
       return false;
     }
@@ -739,56 +769,67 @@ export class FatigueEngine {
     const avgEAR = (leftEAR + rightEAR) / 2;
     this.updateEARCalibration(avgEAR);
 
-    const leftEyeWidth = Math.hypot(
-      landmarks[LEFT_EYE[0]].x - landmarks[LEFT_EYE[3]].x,
-      landmarks[LEFT_EYE[0]].y - landmarks[LEFT_EYE[3]].y
-    );
-    const rightEyeWidth = Math.hypot(
-      landmarks[RIGHT_EYE[0]].x - landmarks[RIGHT_EYE[3]].x,
-      landmarks[RIGHT_EYE[0]].y - landmarks[RIGHT_EYE[3]].y
-    );
-    const minEyeWidth = Math.min(leftEyeWidth, rightEyeWidth);
-    const maxEyeWidth = Math.max(leftEyeWidth, rightEyeWidth);
-    const eyeAsymmetryRatio = maxEyeWidth / Math.max(minEyeWidth, 1e-6);
-
     const frameGap = this.lastResultAt > 0 ? now - this.lastResultAt : 0;
     this.lastResultAt = now;
     const isBackground = !this.isTabVisible;
-    const eyesCurrentlyClosed =
-      avgEAR < this.earThreshold &&
-      Math.max(leftEAR, rightEAR) < this.earThreshold * 1.08;
 
-    // Pitch detection (looking up/down)
-    const eyeCenterY = (landmarks[LEFT_EYE[0]].y + landmarks[RIGHT_EYE[0]].y) / 2;
-    const noseTipY = landmarks[4].y;
-    const mouthY = landmarks[13].y; // Upper lip inner
-    const headPitchRatio = (noseTipY - eyeCenterY) / Math.max(mouthY - eyeCenterY, 1e-6);
+    const blendshapes = (results as FaceLandmarkerBlendshapesResult).faceBlendshapes?.[0]?.categories ?? [];
+    const eyeBlinkLeft = getBlendshapeScore(blendshapes, 'eyeBlinkLeft');
+    const eyeBlinkRight = getBlendshapeScore(blendshapes, 'eyeBlinkRight');
+    const pitch = calculateHeadPitch(landmarks);
+
+    // DEBUG: Log key metrics periodically OR when a blink is potentially happening
+    if ((now % 1000 < 50) || (eyeBlinkLeft > 0.4 || eyeBlinkRight > 0.4)) {
+      console.log(`[FatigueEngine] State: ${this.currentState}, Pitch: ${pitch.toFixed(1)}, L: ${eyeBlinkLeft.toFixed(2)}, R: ${eyeBlinkRight.toFixed(2)}`);
+    }
+
+    // Reject unstable frames
+    if (
+      pitch > 30 || pitch < -20 ||   // extreme angles
+      !Number.isFinite(pitch)
+    ) {
+      this.emitState();
+      return;
+    }
 
     // Attention State Machine Classification
     let nextState: AttentionState = 'ATTENTIVE';
 
-    // Signal validation: Face lost if structural signals are corrupted
-    const signalLost = minEyeWidth < MIN_VALID_EYE_WIDTH || eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO;
-    
-    if (signalLost || headPitchRatio < 0.35) {
+    if (!this.faceDetected) {
       nextState = 'FACE_LOST';
-    } else if (headPitchRatio > 0.60) { // Downward pitch > ~20 degrees
+    } else if (pitch > 25) {
       nextState = 'LOOKING_DOWN';
     }
 
-    this.currentState = nextState;
+    if (nextState !== this.currentState) {
+      if (this.pendingState !== nextState) {
+        this.pendingState = nextState;
+        this.stateHoldStart = now;
+      }
+
+      if (now - this.stateHoldStart > 800) {
+        this.currentState = nextState;
+      }
+    } else {
+      this.pendingState = nextState;
+    }
 
     if (this.currentState !== 'ATTENTIVE') {
-      // Gate updates: Do NOT count closures, do NOT update PERCLOS or blinks
-      if (this.eyesClosed) {
-        this.resetClosureTracking();
-      }
-      this.handleUnknownTrackingFrame(now);
-      this.emitState(); // Will return smoothed previous score
+      // 🔥 CRITICAL: wipe ALL corrupted signals
+      this.resetClosureTracking();
+      this.eyeClosureHistory = [];
+      this.perclosValue = 0;
+
+      this.emitState();
       return;
     }
     
     this.unknownStateStartAt = 0;
+
+    // 🔥 MUCH more stable than EAR
+    const eyesCurrentlyClosed =
+      eyeBlinkLeft > 0.4 &&
+      eyeBlinkRight > 0.4;
 
     if (eyesCurrentlyClosed) {
       this.openStateStartAt = 0;
@@ -834,10 +875,17 @@ export class FatigueEngine {
         // Stability period passed, classify the closure event
         const closureDuration = this.openStateStartAt - this.eyeClosedStart;
 
-        // Record closure for PERCLOS ONLY ONCE after stability is confirmed.
-        // Signal validation: Only count closures > 150ms to filter noise/winks.
-        if (closureDuration >= 150) {
-          this.eyeClosureHistory.push({ start: this.eyeClosedStart, end: this.openStateStartAt });
+        if (
+          closureDuration >= 200 &&
+          this.closureSampleCount >= 3 &&
+          this.currentState === 'ATTENTIVE'
+        ) {
+          this.eyeClosureHistory.push({
+            start: this.eyeClosedStart,
+            end: this.openStateStartAt
+          });
+          this.recentClosures.push(now);
+          this.recentClosures = this.recentClosures.filter(t => now - t < 10000);
         }
         
         const sparseBackgroundClosure =
@@ -848,6 +896,13 @@ export class FatigueEngine {
 
         if (sparseBackgroundClosure) {
           if (now - this.lastBlinkAt >= BLINK_REFRACTORY_MS) {
+            if (this.lastBlinkAt > 0) {
+              const interval = now - this.lastBlinkAt;
+              this.blinkIntervals.push(interval);
+              if (this.blinkIntervals.length > 20) {
+                this.blinkIntervals.shift();
+              }
+            }
             this.blinkCount++;
             this.blinkHistory.push(now);
             this.lastBlinkAt = now;
@@ -863,6 +918,13 @@ export class FatigueEngine {
           now - this.lastBlinkAt >= BLINK_REFRACTORY_MS
         ) {
           // Valid blink detected
+          if (this.lastBlinkAt > 0) {
+            const interval = now - this.lastBlinkAt;
+            this.blinkIntervals.push(interval);
+            if (this.blinkIntervals.length > 20) {
+              this.blinkIntervals.shift();
+            }
+          }
           this.blinkCount++;
           this.blinkHistory.push(now);
           this.lastBlinkAt = now;
@@ -909,8 +971,11 @@ export class FatigueEngine {
         totalClosedMs += (effectiveEnd - effectiveStart);
       }
     }
-    
-    this.perclosValue = (totalClosedMs / PERCLOS_WINDOW_MS) * 100;
+
+    this.perclosValue = Math.min(
+      (totalClosedMs / PERCLOS_WINDOW_MS) * 100,
+      50 // hard cap
+    );
   }
 
   private updateEARCalibration(avgEAR: number): void {
@@ -939,6 +1004,15 @@ export class FatigueEngine {
       ? this.openEARBaseline * EAR_OPEN_FRACTION
       : DEFAULT_EAR_THRESHOLD;
     this.earThreshold = Math.min(MAX_EAR_THRESHOLD, Math.max(MIN_EAR_THRESHOLD, candidateThreshold));
+  }
+
+  private calculateStdDev(values: number[]): number {
+    if (values.length < 2) return 0;
+    const mean = values.reduce((a, b) => a + b, 0) / values.length;
+    const variance =
+      values.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) /
+      values.length;
+    return Math.sqrt(variance);
   }
 
   private resetClosureTracking(): void {
@@ -986,7 +1060,6 @@ export class FatigueEngine {
     const sessionMinutes = Math.max(0, effectiveElapsedMs / 60000);
 
     const settings = this.getNotificationSettings();
-    const lowBlinkRate = settings.lowBlinkRate;
 
     // Session average blink rate: smoothed denominator in first minute to avoid spikes.
     const normalizedMinutes = Math.max(sessionMinutes, 1);
@@ -994,46 +1067,87 @@ export class FatigueEngine {
       ? Math.round(this.blinkCount / normalizedMinutes)
       : 0;
 
-    // Fatigue score calculation (0-100)
-    
-    // Prevent Low-Sample Instability
-    let blinkDeficit = 0;
-    if (this.currentBlinkRate >= 3 || sessionMinutes < 1) {
-      const effectiveBlinkRate = this.currentBlinkRate > 0 ? this.currentBlinkRate : this.sessionAvgBlinkRate;
-      blinkDeficit = sessionMinutes < 1
-        ? 0
-        : Math.max(0, (lowBlinkRate - effectiveBlinkRate) / lowBlinkRate) * 30;
+    // 🔥 Baseline Blink Rate (Personalization)
+    if (sessionMinutes < 3 && this.currentBlinkRate > 0) {
+      this.baselineBlinkRate =
+        this.baselineBlinkRate === 0
+          ? this.currentBlinkRate
+          : this.baselineBlinkRate * 0.9 + this.currentBlinkRate * 0.1;
     }
 
-    // closurePenalty now driven primarily by PERCLOS (time eyes are closed)
-    // plus a small weight for discrete "microsleep" events.
-    // 15% PERCLOS is the standard drowsiness threshold.
-    const perclosWeight = (this.perclosValue / 15) * 60;
-    const acuteClosureWeight = Math.min(this.longClosureEvents * 5, 20);
-    const closurePenalty = Math.min(perclosWeight + acuteClosureWeight, 80);
+    // 🔥 Sigmoid-based PERCLOS Scaling
+    function sigmoid(x: number): number {
+      return 1 / (1 + Math.exp(-x));
+    }
+    const normalizedPerclos = this.perclosValue / 25;
+    const perclosWeight = sigmoid((normalizedPerclos - 0.5) * 6) * 25;
 
-    // Let fatigue grow gradually with session duration after a short grace period.
-    const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 20, 20);
+    // 🔥 Relative Blink Deficit
+    const referenceRate =
+      this.baselineBlinkRate > 0
+        ? this.baselineBlinkRate
+        : settings.lowBlinkRate;
+
+    const relativeDeficit = Math.max(
+      0,
+      (referenceRate - this.currentBlinkRate) / referenceRate
+    );
+    const blinkDeficit = relativeDeficit * 30;
+
+    // 🔥 Blink Variability Penalty
+    const stdDev = this.calculateStdDev(this.blinkIntervals);
+    const variabilityPenalty = Math.min(stdDev / 2000, 1) * 15;
+
+    // 🔥 Acute Closure Weight
+    const acuteClosureWeight = Math.min(this.longClosureEvents * 5, 15);
+
+    // 🔥 Exponential Duration Penalty
+    const durationFactor = 1 - Math.exp(-sessionMinutes / 60);
+    const durationPenalty = durationFactor * 20;
+
+    // 🔥 Micro-Burst Detection
+    const burstPenalty = Math.min(this.recentClosures.length * 3, 10);
     
-    const rawFatigueScore = Math.min(100, Math.max(0, blinkDeficit + closurePenalty + durationPenalty));
+    let rawFatigueScore = Math.min(
+      100,
+      Math.max(
+        0,
+        perclosWeight +
+          blinkDeficit +
+          variabilityPenalty +
+          acuteClosureWeight +
+          durationPenalty +
+          burstPenalty
+      )
+    );
 
-    // Temporal Smoothing (EMA) - updated at most once per second to prevent over-smoothing
+    // 🔥 Confidence Weighting
+    let confidence = 1;
+    if (this.currentState === 'LOOKING_DOWN') confidence = 0.3;
+    if (this.currentState === 'FACE_LOST') confidence = 0;
+    rawFatigueScore *= confidence;
+
+    // 🔥 Momentum-based smoothing (physiological model)
+    const adaptationRate = 0.05;
+
+    // Update at most once per second to stay consistent with heartbeat
     if (now - this.lastFatigueSmoothAt >= 1000) {
-      let nextFatigueScore = 0.2 * rawFatigueScore + 0.8 * this.smoothedFatigueScore;
+      this.smoothedFatigueScore +=
+        (rawFatigueScore - this.smoothedFatigueScore) * adaptationRate;
       
-      // Rate Limiter: Max fatigue change per update = ±5
-      if (nextFatigueScore > this.smoothedFatigueScore + 5) {
-        nextFatigueScore = this.smoothedFatigueScore + 5;
-      } else if (nextFatigueScore < this.smoothedFatigueScore - 5) {
-        nextFatigueScore = this.smoothedFatigueScore - 5;
+      // 🔥 Recovery condition
+      if (
+        this.perclosValue < 5 &&
+        this.currentBlinkRate >= referenceRate &&
+        this.longClosureEvents === 0
+      ) {
+        this.smoothedFatigueScore *= 0.97;
       }
       
-      this.smoothedFatigueScore = nextFatigueScore;
       this.lastFatigueSmoothAt = now;
     }
+
     const fatigueScore = Math.round(this.smoothedFatigueScore);
-
-
     let fatigueLevel: FatigueState['fatigueLevel'] = 'Fresh';
     if (fatigueScore > 70) fatigueLevel = 'High Fatigue';
     else if (fatigueScore > 40) fatigueLevel = 'Moderate Fatigue';
@@ -1059,7 +1173,7 @@ export class FatigueEngine {
       currentBlinkRate: this.currentBlinkRate,
       sessionAvgBlinkRate: this.sessionAvgBlinkRate,
       blinksPerMinute: this.sessionAvgBlinkRate,
-      fatigueScore: Math.round(fatigueScore),
+      fatigueScore: fatigueScore,
       fatigueLevel,
       longClosureEvents: this.longClosureEvents,
       eyesOpen: !this.eyesClosed,
@@ -1104,7 +1218,7 @@ export class FatigueEngine {
       ? 0
       : Math.max(0, (lowBlinkRate - this.currentBlinkRate) / lowBlinkRate) * 30;
 
-    const perclosWeight = (this.perclosValue / 15) * 60;
+    const perclosWeight = (this.perclosValue / 25) * 40;
     const acuteClosureWeight = Math.min(this.longClosureEvents * 5, 20);
     const closurePenalty = Math.min(perclosWeight + acuteClosureWeight, 80);
     const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 20, 20);

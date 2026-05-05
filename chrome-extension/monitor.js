@@ -62,6 +62,31 @@ let eyeClosureHistory = [];
 let currentState = 'FACE_LOST';
 let smoothedFatigueScore = 0;
 let lastFatigueSmoothAt = 0;
+let pendingState = 'FACE_LOST';
+let stateHoldStart = 0;
+let blinkIntervals = [];
+let recentClosures = [];
+let baselineBlinkRate = 0;
+
+function calculateStdDev(values) {
+  if (values.length < 2) return 0;
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  const variance = values.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / values.length;
+  return Math.sqrt(variance);
+}
+
+function getBlendshapeScore(blendshapes, name) {
+  return blendshapes.find(b => b.categoryName === name)?.score ?? 0;
+}
+
+function calculateHeadPitch(landmarks) {
+  const chin = landmarks[152];
+  const forehead = landmarks[10];
+  const faceVectorY = chin.y - forehead.y;
+  const faceVectorZ = (chin.z || 0) - (forehead.z || 0);
+  const pitchRad = Math.atan2(faceVectorZ, faceVectorY);
+  return pitchRad * (180 / Math.PI);
+}
 
 document.addEventListener('visibilitychange', () => {
   const wasVisible = isTabVisible;
@@ -164,27 +189,43 @@ async function resumeSession() {
 }
 
 function calculateFatigueScore(sessionMinutes, blinkRate, currentBlinkRate, now) {
-  let blinkDeficit = 0;
-  if (currentBlinkRate >= 3 || sessionMinutes < 1) {
-    blinkDeficit = sessionMinutes < 1 ? 0 : Math.max(0, (lowBlinkRate - blinkRate) / lowBlinkRate) * 30;
+  if (sessionMinutes < 3 && currentBlinkRate > 0) {
+    baselineBlinkRate = baselineBlinkRate === 0 ? currentBlinkRate : baselineBlinkRate * 0.9 + currentBlinkRate * 0.1;
   }
-  
-  const perclosWeight = (perclosValue / 15) * 60;
-  const acuteClosureWeight = Math.min(longClosureEvents * 5, 20);
-  const closurePenalty = Math.min(perclosWeight + acuteClosureWeight, 80);
-  
-  const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 20, 20);
-  const rawFatigueScore = Math.min(100, Math.max(0, blinkDeficit + closurePenalty + durationPenalty));
 
+  function sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
+  const normalizedPerclos = perclosValue / 25;
+  const perclosWeight = sigmoid((normalizedPerclos - 0.5) * 6) * 25;
+
+  const referenceRate = baselineBlinkRate > 0 ? baselineBlinkRate : lowBlinkRate;
+  const relativeDeficit = Math.max(0, (referenceRate - currentBlinkRate) / referenceRate);
+  const blinkDeficit = relativeDeficit * 30;
+
+  const stdDev = calculateStdDev(blinkIntervals);
+  const variabilityPenalty = Math.min(stdDev / 2000, 1) * 15;
+
+  const acuteClosureWeight = Math.min(longClosureEvents * 5, 15);
+  
+  const durationFactor = 1 - Math.exp(-sessionMinutes / 60);
+  const durationPenalty = durationFactor * 20;
+
+  const burstPenalty = Math.min(recentClosures.length * 3, 10);
+
+  let rawFatigueScore = Math.min(100, Math.max(0, perclosWeight + blinkDeficit + variabilityPenalty + acuteClosureWeight + durationPenalty + burstPenalty));
+
+  let confidence = 1;
+  if (currentState === 'LOOKING_DOWN') confidence = 0.3;
+  if (currentState === 'FACE_LOST') confidence = 0;
+  rawFatigueScore *= confidence;
+
+  const adaptationRate = 0.05;
   if (now - lastFatigueSmoothAt >= 1000) {
-    let nextFatigueScore = 0.2 * rawFatigueScore + 0.8 * smoothedFatigueScore;
-    if (nextFatigueScore > smoothedFatigueScore + 5) {
-      nextFatigueScore = smoothedFatigueScore + 5;
-    } else if (nextFatigueScore < smoothedFatigueScore - 5) {
-      nextFatigueScore = smoothedFatigueScore - 5;
+    smoothedFatigueScore += (rawFatigueScore - smoothedFatigueScore) * adaptationRate;
+    
+    if (perclosValue < 5 && currentBlinkRate >= referenceRate && longClosureEvents === 0) {
+      smoothedFatigueScore *= 0.97;
     }
     
-    smoothedFatigueScore = nextFatigueScore;
     lastFatigueSmoothAt = now;
   }
   return Math.round(smoothedFatigueScore);
@@ -422,6 +463,9 @@ function resetSessionCounters() {
   earThreshold = DEFAULT_EAR_THRESHOLD;
   earCalibrationSamples = [];
   lastResultAt = 0;
+  blinkIntervals = [];
+  recentClosures = [];
+  baselineBlinkRate = 0;
   resetClosureTracking();
 }
 
@@ -478,56 +522,49 @@ function onFaceLandmarkerResults(results) {
   }
 
   const landmarks = results.faceLandmarks[0];
+  const frameGap = lastResultAt > 0 ? now - lastResultAt : 0;
+  lastResultAt = now;
+  const isBackground = !isTabVisible;
   
-  // Pose reliability check
-  const leftEyeWidth = Math.hypot(landmarks[LEFT_EYE[0]].x - landmarks[LEFT_EYE[3]].x, landmarks[LEFT_EYE[0]].y - landmarks[LEFT_EYE[3]].y);
-  const rightEyeWidth = Math.hypot(landmarks[RIGHT_EYE[0]].x - landmarks[RIGHT_EYE[3]].x, landmarks[RIGHT_EYE[0]].y - landmarks[RIGHT_EYE[3]].y);
-  const minEyeWidth = Math.min(leftEyeWidth, rightEyeWidth);
-  const maxEyeWidth = Math.max(leftEyeWidth, rightEyeWidth);
-  const eyeAsymmetryRatio = maxEyeWidth / Math.max(minEyeWidth, 1e-6);
-  
-  const leftEAR = computeEAR(landmarks, LEFT_EYE);
-  const rightEAR = computeEAR(landmarks, RIGHT_EYE);
-  const avgEAR = (leftEAR + rightEAR) / 2;
+  const blendshapes = results.faceBlendshapes?.[0]?.categories || [];
+  const eyeBlinkLeft = getBlendshapeScore(blendshapes, 'eyeBlinkLeft');
+  const eyeBlinkRight = getBlendshapeScore(blendshapes, 'eyeBlinkRight');
+  const pitch = calculateHeadPitch(landmarks);
 
-  if (earCalibrationSamples.length < CALIBRATION_SAMPLES_REQUIRED) {
-    updateEARCalibration(avgEAR);
+  if (pitch > 30 || pitch < -20 || !Number.isFinite(pitch)) {
+    return;
   }
 
-  // Symmetry check for closing
-  const eyesCurrentlyClosed = avgEAR < earThreshold && Math.max(leftEAR, rightEAR) < earThreshold * 1.08;
-  const isBackground = !isTabVisible;
-
-  // Pitch detection (looking up/down)
-  const eyeCenterY = (landmarks[LEFT_EYE[0]].y + landmarks[RIGHT_EYE[0]].y) / 2;
-  const noseTipY = landmarks[4].y;
-  const mouthY = landmarks[13].y; // Upper lip inner
-  const headPitchRatio = (noseTipY - eyeCenterY) / Math.max(mouthY - eyeCenterY, 1e-6);
-
-  // Attention State Machine Classification
   let nextState = 'ATTENTIVE';
-
-  // Signal validation: Face lost if structural signals are corrupted
-  const signalLost = minEyeWidth < MIN_VALID_EYE_WIDTH || eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO;
-  
-  if (signalLost || headPitchRatio < 0.35) {
+  if (!faceDetected) {
     nextState = 'FACE_LOST';
-  } else if (headPitchRatio > 0.60) { // Downward pitch > ~20 degrees
+  } else if (pitch > 25) {
     nextState = 'LOOKING_DOWN';
   }
 
-  currentState = nextState;
+  if (nextState !== currentState) {
+    if (pendingState !== nextState) {
+      pendingState = nextState;
+      stateHoldStart = now;
+    }
+    if (now - stateHoldStart > 800) {
+      currentState = nextState;
+    }
+  } else {
+    pendingState = nextState;
+  }
 
   if (currentState !== 'ATTENTIVE') {
-    if (eyesClosed) {
-      resetClosureTracking();
-    }
+    resetClosureTracking();
+    eyeClosureHistory = [];
+    perclosValue = 0;
     handleUnknownTrackingFrame(now);
     return;
   }
 
   unknownStateStartAt = 0;
 
+  const eyesCurrentlyClosed = eyeBlinkLeft > 0.4 && eyeBlinkRight > 0.4;
 
   if (eyesCurrentlyClosed) {
     openStateStartAt = 0;
@@ -545,10 +582,10 @@ function onFaceLandmarkerResults(results) {
     if (stableEnough) {
       const closedDuration = openStateStartAt - eyeClosedStart;
 
-      // Record for PERCLOS using the true end time of the closure
-      // Signal validation: Only count closures > 150ms
-      if (closedDuration >= 150) {
+      if (closedDuration >= 200 && closureSampleCount >= 3) {
         eyeClosureHistory.push({ start: eyeClosedStart, end: openStateStartAt });
+        recentClosures.push(now);
+        recentClosures = recentClosures.filter(t => now - t < 10000);
       }
       
       const sparseBackgroundClosure = isBackground && 
@@ -558,6 +595,11 @@ function onFaceLandmarkerResults(results) {
 
       if (sparseBackgroundClosure) {
         if (now - lastBlinkTime >= BLINK_REFRACTORY_MS) {
+          if (lastBlinkTime > 0) {
+            const interval = now - lastBlinkTime;
+            blinkIntervals.push(interval);
+            if (blinkIntervals.length > 20) blinkIntervals.shift();
+          }
           blinkCount += 1;
           blinkHistory.push(now);
           lastBlinkTime = now;
@@ -567,19 +609,20 @@ function onFaceLandmarkerResults(results) {
           longClosureEvents += 1;
           drowsinessCounted = true;
         }
-      } 
-
-      if (closedDuration >= BLINK_MIN_MS && closedDuration < DROWSINESS_THRESHOLD_MS) {
+      } else if (closedDuration >= BLINK_MIN_MS && closedDuration < DROWSINESS_THRESHOLD_MS) {
         if (now - lastBlinkTime >= BLINK_REFRACTORY_MS) {
-          // If tab is backgrounded, require more closure samples to confirm a blink
           if (!isBackground || closureSampleCount >= 3) {
+            if (lastBlinkTime > 0) {
+              const interval = now - lastBlinkTime;
+              blinkIntervals.push(interval);
+              if (blinkIntervals.length > 20) blinkIntervals.shift();
+            }
             blinkCount += 1;
             blinkHistory.push(now);
             lastBlinkTime = now;
           }
         }
       }
-
       resetClosureTracking();
     }
   }
