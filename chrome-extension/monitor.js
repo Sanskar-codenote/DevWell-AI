@@ -435,8 +435,7 @@ function handleUnknownTrackingFrame(now) {
 }
 
 const MAX_EYE_ASYMMETRY_RATIO = 1.8;
-const MIN_VALID_EYE_WIDTH = 0.018;
-const MIN_PITCH_RATIO = 0.40;
+const MIN_VALID_EYE_WIDTH = 0.012;
 
 function onFaceLandmarkerResults(results) {
   const now = Date.now();
@@ -483,16 +482,17 @@ function onFaceLandmarkerResults(results) {
   const eyesCurrentlyClosed = avgEAR < earThreshold && Math.max(leftEAR, rightEAR) < earThreshold * 1.08;
   const isBackground = !isTabVisible;
 
-  // Pitch detection (looking down at keyboard)
+  // Pitch detection (looking up/down)
   const eyeCenterY = (landmarks[LEFT_EYE[0]].y + landmarks[RIGHT_EYE[0]].y) / 2;
   const noseTipY = landmarks[4].y;
   const mouthY = landmarks[13].y; // Upper lip inner
   const headPitchRatio = (noseTipY - eyeCenterY) / Math.max(mouthY - eyeCenterY, 1e-6);
 
-  // Stricter pitch threshold when eyes look closed to catch keyboard entry early
-  const dynamicPitchThreshold = eyesCurrentlyClosed ? 0.48 : 0.42;
+  // Dynamic thresholds: stricter when eyes look closed to catch keyboard entry early
+  const minPitchThreshold = eyesCurrentlyClosed ? 0.40 : 0.35; // Looking up
+  const maxPitchThreshold = eyesCurrentlyClosed ? 0.60 : 0.68; // Looking down at keyboard
 
-  if (minEyeWidth < MIN_VALID_EYE_WIDTH || eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO || headPitchRatio < dynamicPitchThreshold) {
+  if (minEyeWidth < MIN_VALID_EYE_WIDTH || eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO || headPitchRatio < minPitchThreshold || headPitchRatio > maxPitchThreshold) {
     if (eyesClosed) {
       resetClosureTracking();
     }

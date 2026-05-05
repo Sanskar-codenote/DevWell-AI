@@ -122,7 +122,7 @@ const BLINK_REFRACTORY_MS = 80;
 const DEFAULT_LOW_BLINK_RATE = 15;
 const BREAK_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
 const MAX_EYE_ASYMMETRY_RATIO = 1.8;
-const MIN_VALID_EYE_WIDTH = 0.018;
+const MIN_VALID_EYE_WIDTH = 0.012;
 const UNKNOWN_FRAME_RESET_MS = 2500;
 const REOPEN_STABILITY_MS = 90;
 const HIDDEN_READER_TIMEOUT_MS = 280;
@@ -749,16 +749,21 @@ export class FatigueEngine {
       avgEAR < this.earThreshold &&
       Math.max(leftEAR, rightEAR) < this.earThreshold * 1.08;
 
-    // Pitch detection (looking down at keyboard)
+    // Pitch detection (looking up/down)
     const eyeCenterY = (landmarks[LEFT_EYE[0]].y + landmarks[RIGHT_EYE[0]].y) / 2;
     const noseTipY = landmarks[4].y;
     const mouthY = landmarks[13].y; // Upper lip inner
     const headPitchRatio = (noseTipY - eyeCenterY) / Math.max(mouthY - eyeCenterY, 1e-6);
 
-    // Stricter pitch threshold when eyes look closed to catch keyboard entry early
-    const dynamicPitchThreshold = eyesCurrentlyClosed ? 0.48 : 0.42;
+    // Dynamic thresholds: stricter when eyes look closed to catch keyboard entry early
+    const minPitchThreshold = eyesCurrentlyClosed ? 0.40 : 0.35; // Looking up
+    const maxPitchThreshold = eyesCurrentlyClosed ? 0.60 : 0.68; // Looking down at keyboard
 
-    const unreliablePose = minEyeWidth < MIN_VALID_EYE_WIDTH || eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO || headPitchRatio < dynamicPitchThreshold;
+    const unreliablePose = 
+      minEyeWidth < MIN_VALID_EYE_WIDTH || 
+      eyeAsymmetryRatio > MAX_EYE_ASYMMETRY_RATIO || 
+      headPitchRatio < minPitchThreshold || 
+      headPitchRatio > maxPitchThreshold;
     if (unreliablePose) {
       // Immediate reset on unreliable pose to prevent false drowsy events
       if (this.eyesClosed) {
