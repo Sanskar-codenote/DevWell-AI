@@ -2,7 +2,6 @@ import { FaceLandmarker, FilesetResolver } from './lib/vision_bundle.js';
 
 const LEFT_EYE = [362, 385, 387, 263, 373, 380];
 const RIGHT_EYE = [33, 160, 158, 133, 153, 144];
-const DEFAULT_EAR_THRESHOLD = 0.21;
 const BLINK_MIN_MS = 50;
 const DROWSINESS_THRESHOLD_MS = 1500;
 const BLINK_REFRACTORY_MS = 80;
@@ -52,10 +51,7 @@ processingCanvas.height = 480;
 
 const AUTO_PAUSE_THRESHOLD_MS = 20000;
 
-let earThreshold = DEFAULT_EAR_THRESHOLD;
 let lowBlinkRate = 15;
-let earCalibrationSamples = [];
-const CALIBRATION_SAMPLES_REQUIRED = 30;
 let openStateStartAt = 0;
 let perclosValue = 0;
 let eyeClosureHistory = [];
@@ -102,17 +98,6 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-function computeEAR(landmarks, eyeIndices) {
-  const p = eyeIndices.map((i) => landmarks[i]);
-  const dist3d = (p1, p2) => 
-    Math.hypot(p1.x - p2.x, p1.y - p2.y, (p1.z || 0) - (p2.z || 0));
-
-  const v1 = dist3d(p[1], p[5]);
-  const v2 = dist3d(p[2], p[4]);
-  const h = dist3d(p[0], p[3]);
-  return (v1 + v2) / (2.0 * h);
-}
-
 function stopCamera() {
   if (cameraStream) {
     cameraStream.getTracks().forEach(t => { try { t.stop(); t.enabled = false; } catch (e) {} });
@@ -142,16 +127,6 @@ async function startCamera() {
       resolve();
     };
   });
-}
-
-function updateEARCalibration(avgEAR) {
-  if (earCalibrationSamples.length < CALIBRATION_SAMPLES_REQUIRED) {
-    earCalibrationSamples.push(avgEAR);
-    if (earCalibrationSamples.length === CALIBRATION_SAMPLES_REQUIRED) {
-      const avg = earCalibrationSamples.reduce((a, b) => a + b, 0) / CALIBRATION_SAMPLES_REQUIRED;
-      earThreshold = Math.max(0.16, Math.min(0.25, avg * 0.7));
-    }
-  }
 }
 
 function pauseSession(isAuto = false) {
@@ -395,8 +370,12 @@ async function runHiddenFrameLoop() {
         const delay = Math.max(10, HIDDEN_LOOP_INTERVAL_MS - processingTime);
         await new Promise(resolve => setTimeout(resolve, delay));
       } else {
-        // Yield to let other async tasks run
-        await new Promise(resolve => setTimeout(resolve, 0));
+        // Yield to let other async tasks run without being heavily throttled by background setTimeout(0)
+        // For MediaStreamTrackProcessor.read(), the read itself provides the natural throttle.
+        // For fallback sources, we use a very small delay.
+        if (!hiddenFrameReader) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
       }
     }
   } finally {
@@ -466,8 +445,6 @@ function resetSessionCounters() {
   longClosureEvents = 0;
   blinkHistory = [];
   lastBlinkTime = 0;
-  earThreshold = DEFAULT_EAR_THRESHOLD;
-  earCalibrationSamples = [];
   lastResultAt = 0;
   blinkIntervals = [];
   recentClosures = [];
@@ -587,7 +564,7 @@ function onFaceLandmarkerResults(results) {
     if (stableEnough) {
       const closedDuration = openStateStartAt - eyeClosedStart;
 
-      if (closedDuration >= 200 && closureSampleCount >= 3) {
+      if (closedDuration >= 200 && (closureSampleCount >= 3 || isBackground)) {
         eyeClosureHistory.push({ start: eyeClosedStart, end: openStateStartAt });
         recentClosures.push(now);
         recentClosures = recentClosures.filter(t => now - t < 10000);
@@ -616,7 +593,7 @@ function onFaceLandmarkerResults(results) {
         }
       } else if (closedDuration >= BLINK_MIN_MS && closedDuration < DROWSINESS_THRESHOLD_MS) {
         if (now - lastBlinkTime >= BLINK_REFRACTORY_MS) {
-          if (!isBackground || closureSampleCount >= 3) {
+          if (!isBackground || closureSampleCount >= 1) {
             if (lastBlinkTime > 0) {
               const interval = now - lastBlinkTime;
               blinkIntervals.push(interval);

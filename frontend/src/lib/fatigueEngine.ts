@@ -123,29 +123,10 @@ type AlertCallback = (
   message: string
 ) => void;
 
-// Eye Aspect Ratio calculation using 6 landmark points per eye
-function computeEAR(landmarks: FaceLandmark[], eyeIndices: number[]): number {
-  const p = eyeIndices.map(i => landmarks[i]);
-  // Use z-coordinate if available, defaulting to 0 for stability
-  const dist3d = (p1: FaceLandmark, p2: FaceLandmark) => 
-    Math.hypot(p1.x - p2.x, p1.y - p2.y, (p1.z ?? 0) - (p2.z ?? 0));
-
-  // Vertical distances
-  const v1 = dist3d(p[1], p[5]);
-  const v2 = dist3d(p[2], p[4]);
-  // Horizontal distance
-  const h = dist3d(p[0], p[3]);
-  return (v1 + v2) / (2.0 * h);
-}
-
-// MediaPipe eye landmark indices
+// MediaPipe eye landmark indices (kept for coordinate tracking if needed)
 const LEFT_EYE = [362, 385, 387, 263, 373, 380];
 const RIGHT_EYE = [33, 160, 158, 133, 153, 144];
 
-const DEFAULT_EAR_THRESHOLD = 0.21;
-const MIN_EAR_THRESHOLD = 0.16;
-const MAX_EAR_THRESHOLD = 0.30;
-const EAR_OPEN_FRACTION = 0.68; // Eye-closed threshold as a fraction of calibrated open-eye EAR
 const BLINK_MIN_MS = 50;
 const DROWSINESS_THRESHOLD_MS = 1500;
 const BLINK_REFRACTORY_MS = 80;
@@ -216,11 +197,6 @@ export class FatigueEngine {
   private isTabVisible = typeof document !== 'undefined' ? document.visibilityState === 'visible' : true; 
   private wakeLock: WakeLockSentinel | null = null; // Keep screen awake
   private lastFatigueAlertAt = 0;
-  private earThreshold = DEFAULT_EAR_THRESHOLD;
-  private openEARBaseline = 0;
-  private earCalibrationSamples: number[] = [];
-  private calibrationStartedAt = 0;
-  private minEARDuringClosure = 1;
   private unknownStateStartAt = 0;
   private openStateStartAt = 0;
   private lastBlinkAt = 0;
@@ -567,11 +543,18 @@ export class FatigueEngine {
           } else {
             this.runDetection(this.videoElement);
           }
+          detected = true;
         }
 
         this.checkBreakReminder(Date.now());
         if (!detected) {
           await new Promise(resolve => setTimeout(resolve, HIDDEN_LOOP_BACKOFF_MS));
+        } else {
+          // In background mode, if we're not using MediaStreamTrackProcessor, 
+          // we should still yield slightly to avoid a tight loop, but avoid setTimeout(0)
+          if (!this.hiddenTrackReader) {
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
         }
       }
     } finally {
@@ -763,10 +746,6 @@ export class FatigueEngine {
     }
 
     const landmarks = results.faceLandmarks[0];
-    const leftEAR = computeEAR(landmarks, LEFT_EYE);
-    const rightEAR = computeEAR(landmarks, RIGHT_EYE);
-    const avgEAR = (leftEAR + rightEAR) / 2;
-    this.updateEARCalibration(avgEAR);
 
     const frameGap = this.lastResultAt > 0 ? now - this.lastResultAt : 0;
     this.lastResultAt = now;
@@ -876,7 +855,7 @@ export class FatigueEngine {
 
         if (
           closureDuration >= 200 &&
-          this.closureSampleCount >= 3 &&
+          (this.closureSampleCount >= 3 || isBackground) &&
           this.currentState === 'ATTENTIVE'
         ) {
           this.eyeClosureHistory.push({
@@ -975,34 +954,6 @@ export class FatigueEngine {
       (totalClosedMs / PERCLOS_WINDOW_MS) * 100,
       50 // hard cap
     );
-  }
-
-  private updateEARCalibration(avgEAR: number): void {
-    if (!Number.isFinite(avgEAR) || avgEAR <= 0) return;
-
-    // Collect EAR samples for initial calibration, then keep adapting slowly.
-    if (Date.now() - this.calibrationStartedAt <= 5000 || this.earCalibrationSamples.length < 25) {
-      this.earCalibrationSamples.push(avgEAR);
-      if (this.earCalibrationSamples.length > 80) {
-        this.earCalibrationSamples.shift();
-      }
-      const sorted = [...this.earCalibrationSamples].sort((a, b) => a - b);
-      const idx = Math.floor(sorted.length * 0.8); // 80th percentile approximates open-eye EAR
-      const p80 = sorted[Math.min(idx, sorted.length - 1)];
-      if (p80 > 0) {
-        this.openEARBaseline = p80;
-      }
-    } else if (!this.eyesClosed && avgEAR > this.earThreshold) {
-      // Adapt baseline gradually to lighting/angle changes while eyes are likely open.
-      this.openEARBaseline = this.openEARBaseline === 0
-        ? avgEAR
-        : this.openEARBaseline * 0.985 + avgEAR * 0.015;
-    }
-
-    const candidateThreshold = this.openEARBaseline > 0
-      ? this.openEARBaseline * EAR_OPEN_FRACTION
-      : DEFAULT_EAR_THRESHOLD;
-    this.earThreshold = Math.min(MAX_EAR_THRESHOLD, Math.max(MIN_EAR_THRESHOLD, candidateThreshold));
   }
 
   private calculateStdDev(values: number[]): number {

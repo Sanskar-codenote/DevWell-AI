@@ -4,6 +4,16 @@ This document provides a deep dive into the technical architecture, deployment s
 
 ## 🏗️ Technical Details
 
+### The Role of AI in DevWell
+DevWell leverages edge-based Artificial Intelligence to provide highly accurate, real-time physiological tracking without compromising user privacy. The system does not use server-side processing for computer vision; everything runs locally in the user's browser.
+
+1.  **Core AI Engine (MediaPipe Face Landmarker):**
+    We utilize Google's MediaPipe Face Landmarker task running via WebAssembly (WASM). This is a lightweight, highly optimized deep learning model trained to detect 478 3D facial landmarks in real-time (often running at 15-30+ FPS directly in the browser).
+2.  **Blendshapes (Expression Analysis):**
+    Instead of manually calculating pixel distances between eyelids (which is highly susceptible to camera angle and distance), the AI engine generates "Blendshapes". Blendshapes are normalized scores (0.0 to 1.0) representing 52 distinct facial expressions. We specifically extract the AI's confidence scores for `eyeBlinkLeft` and `eyeBlinkRight` to determine exact closure states, making the detection robust against perspective distortion.
+3.  **Algorithmic Synthesis:**
+    The outputs from the AI model (the 3D landmark coordinates and the Blendshape classifications) act as the raw sensory input for DevWell's deterministic scoring engine. We use the 3D coordinates to calculate true physical head pitch (preventing false readings when looking at a keyboard), and the Blendshapes to calculate PERCLOS (Percentage of Eye Closure) and micro-bursts over time.
+
 ### Detection Pipeline
 
 ```
