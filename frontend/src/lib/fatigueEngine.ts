@@ -211,6 +211,7 @@ export class FatigueEngine {
   // Attention & Smoothing tracking
   private currentState: AttentionState = 'FACE_LOST';
   private smoothedFatigueScore = 0;
+  private lastFatigueSmoothAt = 0;
 
   private processingCanvas: HTMLCanvasElement | null = null;
   private processingCtx: CanvasRenderingContext2D | null = null;
@@ -1016,17 +1017,20 @@ export class FatigueEngine {
     
     const rawFatigueScore = Math.min(100, Math.max(0, blinkDeficit + closurePenalty + durationPenalty));
 
-    // Temporal Smoothing (EMA)
-    let nextFatigueScore = 0.2 * rawFatigueScore + 0.8 * this.smoothedFatigueScore;
-    
-    // Rate Limiter: Max fatigue change per update = ±5
-    if (nextFatigueScore > this.smoothedFatigueScore + 5) {
-      nextFatigueScore = this.smoothedFatigueScore + 5;
-    } else if (nextFatigueScore < this.smoothedFatigueScore - 5) {
-      nextFatigueScore = this.smoothedFatigueScore - 5;
+    // Temporal Smoothing (EMA) - updated at most once per second to prevent over-smoothing
+    if (now - this.lastFatigueSmoothAt >= 1000) {
+      let nextFatigueScore = 0.2 * rawFatigueScore + 0.8 * this.smoothedFatigueScore;
+      
+      // Rate Limiter: Max fatigue change per update = ±5
+      if (nextFatigueScore > this.smoothedFatigueScore + 5) {
+        nextFatigueScore = this.smoothedFatigueScore + 5;
+      } else if (nextFatigueScore < this.smoothedFatigueScore - 5) {
+        nextFatigueScore = this.smoothedFatigueScore - 5;
+      }
+      
+      this.smoothedFatigueScore = nextFatigueScore;
+      this.lastFatigueSmoothAt = now;
     }
-    
-    this.smoothedFatigueScore = nextFatigueScore;
     const fatigueScore = Math.round(this.smoothedFatigueScore);
 
 

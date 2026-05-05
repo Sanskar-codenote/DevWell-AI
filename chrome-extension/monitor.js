@@ -61,6 +61,7 @@ let perclosValue = 0;
 let eyeClosureHistory = [];
 let currentState = 'FACE_LOST';
 let smoothedFatigueScore = 0;
+let lastFatigueSmoothAt = 0;
 
 document.addEventListener('visibilitychange', () => {
   const wasVisible = isTabVisible;
@@ -162,7 +163,7 @@ async function resumeSession() {
   chrome.runtime.sendMessage({ action: 'monitorMetrics', data: buildSessionData() }).catch(() => undefined);
 }
 
-function calculateFatigueScore(sessionMinutes, blinkRate, currentBlinkRate) {
+function calculateFatigueScore(sessionMinutes, blinkRate, currentBlinkRate, now) {
   let blinkDeficit = 0;
   if (currentBlinkRate >= 3 || sessionMinutes < 1) {
     blinkDeficit = sessionMinutes < 1 ? 0 : Math.max(0, (lowBlinkRate - blinkRate) / lowBlinkRate) * 30;
@@ -175,14 +176,17 @@ function calculateFatigueScore(sessionMinutes, blinkRate, currentBlinkRate) {
   const durationPenalty = Math.min(Math.max(sessionMinutes - 3, 0) / 120 * 20, 20);
   const rawFatigueScore = Math.min(100, Math.max(0, blinkDeficit + closurePenalty + durationPenalty));
 
-  let nextFatigueScore = 0.2 * rawFatigueScore + 0.8 * smoothedFatigueScore;
-  if (nextFatigueScore > smoothedFatigueScore + 5) {
-    nextFatigueScore = smoothedFatigueScore + 5;
-  } else if (nextFatigueScore < smoothedFatigueScore - 5) {
-    nextFatigueScore = smoothedFatigueScore - 5;
+  if (now - lastFatigueSmoothAt >= 1000) {
+    let nextFatigueScore = 0.2 * rawFatigueScore + 0.8 * smoothedFatigueScore;
+    if (nextFatigueScore > smoothedFatigueScore + 5) {
+      nextFatigueScore = smoothedFatigueScore + 5;
+    } else if (nextFatigueScore < smoothedFatigueScore - 5) {
+      nextFatigueScore = smoothedFatigueScore - 5;
+    }
+    
+    smoothedFatigueScore = nextFatigueScore;
+    lastFatigueSmoothAt = now;
   }
-  
-  smoothedFatigueScore = nextFatigueScore;
   return Math.round(smoothedFatigueScore);
 }
 
@@ -200,7 +204,7 @@ function buildSessionData() {
   const sessionAvgBlinkRate = durationMinutes > 0 ? Math.round(blinkCount / normalizedMinutes) : 0;
   
   const effectiveBlinkRate = currentBlinkRate > 0 ? currentBlinkRate : sessionAvgBlinkRate;
-  const fatigueScore = calculateFatigueScore(durationMinutes, effectiveBlinkRate, currentBlinkRate);
+  const fatigueScore = calculateFatigueScore(durationMinutes, effectiveBlinkRate, currentBlinkRate, now);
 
   let fatigueLevel = 'Fresh';
   if (fatigueScore > 70) fatigueLevel = 'High Fatigue';
