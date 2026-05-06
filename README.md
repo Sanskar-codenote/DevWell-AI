@@ -17,7 +17,7 @@ DevWell is a **privacy-first developer wellness platform** that monitors eye bli
 
 - **Real-time Fatigue Detection**: Advanced local camera-based blink and drowsiness monitoring using MediaPipe Blendshapes, featuring momentum-based physiological smoothing and goal-oriented blink training.
 - **Robust Background Tracking**: Specially optimized browser extension maintains high-fidelity blink tracking even when tabs are hidden or throttled.
-- **Cross-Browser Support**: Fully compatible with both **Google Chrome** and **Mozilla Firefox**.
+- **Cross-Browser Support**: Production support for **Chromium-based browsers** (Chrome, Edge, Brave) and **Firefox** via dedicated extension builds.
 - **Healthy Reminders**: Configurable alerts based on the 20-20-20 rule and advanced fatigue scoring (Fresh → Moderate → High).
 - **Guest Mode**: Full local-only monitoring without requiring an account.
 - **Dashboard & Analytics**: Track your weekly/monthly trends and session history via the web platform.
@@ -96,7 +96,11 @@ Build the extension for all supported browsers:
 cd chrome-extension
 npm run build:all
 ```
-This generates two output directories: `dist/` (for Chrome) and `dist-firefox/` (for Firefox).
+This generates two output directories: `dist/` (for Chromium browsers) and `dist-firefox/` (for Firefox).
+
+Browser notes:
+- `MediaStreamTrackProcessor` and `ImageCapture` are used when available, with fallback paths for throttled/hidden-tab processing.
+- Safari/iOS are not currently production targets for the extension-based tracking flow.
 
 **To Load in Chrome / Edge / Brave:**
 1. Open `chrome://extensions`

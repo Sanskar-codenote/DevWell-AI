@@ -31,6 +31,7 @@ The web application for DevWell AI, built with React, TypeScript, and Vite.
 
 - **API Proxy**: In development, requests to `/api` are proxied to `http://localhost:3001` (configurable in `vite.config.ts`).
 - **MediaPipe Assets**: Local WASM and task files are stored in `public/mediapipe/` for reliable offline processing.
+- **Background/Minimized Tracking**: The frontend engine includes hidden-tab fallbacks (`MediaStreamTrackProcessor` -> `ImageCapture` -> `video` frame draw) to keep blink detection resilient when browser timers are throttled.
 
 ## Documentation
 Refer to the main `README.md` in the project root for comprehensive architectural details.

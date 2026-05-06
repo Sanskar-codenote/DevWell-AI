@@ -12,13 +12,17 @@ const router = express.Router();
 
 const { sendOtpEmail } = require('../lib/mailer');
 
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
 function generateOtp() {
   return randomInt(100000, 1000000).toString();
 }
 
 const registerSchema = zod.object({
   email: zod.string().email('Invalid email address'),
-  password: zod.string().min(6, 'Password must be at least 6 characters'),
+  password: zod.string().min(8, 'Password must be at least 8 characters'),
   otp: zod.string().min(1, 'Verification code is required'),
 });
 
@@ -30,7 +34,7 @@ const loginSchema = zod.object({
 const resetPasswordSchema = zod.object({
   email: zod.string().email('Invalid email address'),
   otp: zod.string().min(1, 'Verification code is required'),
-  password: zod.string().min(6, 'Password must be at least 6 characters'),
+  password: zod.string().min(8, 'Password must be at least 8 characters'),
 });
 
 // POST /api/v1/auth/send-otp
@@ -44,7 +48,7 @@ router.post('/send-otp', async (req, res) => {
       const details = validated.error.issues ? validated.error.issues.map(e => e.message) : [];
       return res.status(400).json({ error: 'Validation failed', details });
     }
-    const { email } = validated.data;
+    const email = normalizeEmail(validated.data.email);
 
     const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
     if (existing.rows.length > 0) {
@@ -92,7 +96,8 @@ router.post('/register', async (req, res) => {
         details
       });
     }
-    const { email, password, otp } = validated.data;
+    const email = normalizeEmail(validated.data.email);
+    const { password, otp } = validated.data;
 
     // Verify OTP first to prevent email enumeration without a valid code
     const otpResult = await pool.query(
@@ -139,7 +144,8 @@ router.post('/login', async (req, res) => {
         details
       });
     }
-    const { email, password } = validated.data;
+    const email = normalizeEmail(validated.data.email);
+    const { password } = validated.data;
 
     const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     if (result.rows.length === 0) {
@@ -186,7 +192,7 @@ router.post('/forgot-password', async (req, res) => {
       const details = validated.error.issues ? validated.error.issues.map(e => e.message) : [];
       return res.status(400).json({ error: 'Validation failed', details });
     }
-    const { email } = validated.data;
+    const email = normalizeEmail(validated.data.email);
 
     const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
     if (existing.rows.length === 0) {
@@ -233,7 +239,8 @@ router.post('/reset-password', async (req, res) => {
       const details = validated.error.issues ? validated.error.issues.map(e => e.message) : [];
       return res.status(400).json({ error: 'Validation failed', details });
     }
-    const { email, otp, password } = validated.data;
+    const email = normalizeEmail(validated.data.email);
+    const { otp, password } = validated.data;
 
     const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
     if (existing.rows.length === 0) {

@@ -41,6 +41,7 @@ The backend service for DevWell AI, providing authentication, session management
 |----------|-------------|---------|
 | `PORT` | API server port | `3001` |
 | `JWT_SECRET` | Secret key for JWT signing | (Required) |
+| `EXTENSION_ID` | Authorized extension IDs (comma-separated) | Required in production |
 | `DB_USER` | PostgreSQL user | (Required) |
 | `DB_NAME` | PostgreSQL database name | (Required) |
 | `EXTENSION_ID` | Authorized Chrome Extension ID | (Optional in dev) |
@@ -64,7 +65,10 @@ To enable real email delivery for signup verification codes, configure the `SMTP
 Use `smtp.sendgrid.net:587` with `SMTP_USER=apikey` and your SendGrid API key as `SMTP_PASS`.
 
 ## Development Note
-In production mode (`NODE_ENV=production`), the server strictly validates the `EXTENSION_ID`. For local development within Docker, this check is relaxed to a warning to facilitate testing with varying extension IDs.
+In production mode (`NODE_ENV=production`):
+- `EXTENSION_ID` is required.
+- `JWT_SECRET` must be at least 32 characters and must not use placeholder defaults.
+- Extension origins are allowed only when their ID matches configured values.
 
 ## API Documentation
 See the main `README.md` in the project root for general API endpoint information.

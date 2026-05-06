@@ -20,7 +20,7 @@ const logger = pino({
 
 // ─── Environment Validation ─────────────────────────────────────────────────
 const REQUIRED_ENV = ['JWT_SECRET', 'DB_USER', 'DB_NAME', 'DB_PORT'];
-const PRODUCTION_ENV = ['DB_PASSWORD', 'CORS_ALLOWED_ORIGINS'];
+const PRODUCTION_ENV = ['DB_PASSWORD', 'CORS_ALLOWED_ORIGINS', 'EXTENSION_ID'];
 
 function validateEnv() {
   const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
@@ -40,6 +40,11 @@ function validateEnv() {
       logger.fatal('JWT_SECRET must be changed from default value in production');
       process.exit(1);
     }
+
+    if ((process.env.JWT_SECRET || '').length < 32) {
+      logger.fatal('JWT_SECRET must be at least 32 characters in production');
+      process.exit(1);
+    }
   }
 
   logger.info('Environment validated');
@@ -49,6 +54,7 @@ validateEnv();
 
 // ─── Express App ────────────────────────────────────────────────────────────
 const app = express();
+app.disable('x-powered-by');
 if (process.env.NODE_ENV === 'production') {
   app.set('trust proxy', 1);
 }

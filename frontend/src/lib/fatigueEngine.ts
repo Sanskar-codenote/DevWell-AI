@@ -97,6 +97,13 @@ function getBlendshapeScore(blendshapes: Blendshape[], name: string): number {
   return blendshapes.find(b => b.categoryName === name)?.score ?? 0;
 }
 
+function areEyesClosed(left: number, right: number): boolean {
+  if (left > 0.35 && right > 0.35) return true;
+  if (left > 0.55 && right > 0.2) return true;
+  if (right > 0.55 && left > 0.2) return true;
+  return false;
+}
+
 function calculateHeadPitch(landmarks: FaceLandmark[]): number {
   const chin = landmarks[152];
   const forehead = landmarks[10];
@@ -123,7 +130,7 @@ type AlertCallback = (
   message: string
 ) => void;
 
-const BLINK_MIN_MS = 50;
+const BLINK_MIN_MS = 35;
 const DROWSINESS_THRESHOLD_MS = 1500;
 const BLINK_REFRACTORY_MS = 80;
 const DEFAULT_LOW_BLINK_RATE = 15;
@@ -133,10 +140,11 @@ const REOPEN_STABILITY_MS = 90;
 const HIDDEN_READER_TIMEOUT_MS = 280;
 const HIDDEN_GRAB_TIMEOUT_MS = 280;
 const HIDDEN_LOOP_BACKOFF_MS = 40;
+const HIDDEN_LOOP_WATCHDOG_MS = 800;
 const BACKGROUND_DROWSY_MIN_CLOSED_SAMPLES = 3;
 const BACKGROUND_SPARSE_GAP_MS = 700;
-const VISIBLE_FRAME_INTERVAL_MS = 66; // ~15 FPS
 const AUTO_PAUSE_THRESHOLD_MS = 20000; // 20 seconds of no face = auto-pause
+const AUTO_PAUSE_THRESHOLD_HIDDEN_MS = 90000; // More tolerant in hidden tabs
 const PERCLOS_WINDOW_MS = 60 * 1000; // 1 minute rolling window for PERCLOS
 
 interface NotificationSettings {
@@ -198,7 +206,7 @@ export class FatigueEngine {
   private lastBlinkAt = 0;
   private closureSampleCount = 0;
   private lastResultAt = 0;
-  private lastVisibleProcessAt = 0;
+  private lastHiddenDetectionAt = 0;
 
   // PERCLOS tracking
   private perclosValue = 0;
@@ -258,7 +266,9 @@ export class FatigueEngine {
       this.stopCamera();
       this.onAlert('info', 'Session paused. Camera turned off.');
     } else {
-      this.onAlert('info', 'No face detected. Session auto-paused.');
+      if (this.isTabVisible) {
+        this.onAlert('info', 'No face detected. Session auto-paused.');
+      }
     }
     this.emitState();
   }
@@ -286,7 +296,9 @@ export class FatigueEngine {
     if (this.isTabVisible) {
       void this.requestWakeLock();
     }
-    this.onAlert('info', 'Session resumed.');
+    if (!wasAutoPaused) {
+      this.onAlert('info', 'Session resumed.');
+    }
     this.emitState();
   }
 
@@ -307,7 +319,7 @@ export class FatigueEngine {
 
   private releaseWakeLock(): void {
     if (this.wakeLock) {
-      this.wakeLock.release();
+      void this.wakeLock.release().catch(() => undefined);
       this.wakeLock = null;
     }
   }
@@ -327,22 +339,15 @@ export class FatigueEngine {
     if (!this.running) return;
 
     this.clearFrameLoopHandles();
-
-    if (!this.isTabVisible) {
-      this.ensureHiddenFrameProviders();
+    this.ensureHiddenFrameProviders();
+    if (!this.hiddenFrameLoopActive) {
+      void this.runHiddenFrameLoop();
     }
-
-    if (!this.isTabVisible) {
-      if (!this.hiddenFrameLoopActive) {
+    this.backgroundFallbackId = window.setTimeout(() => {
+      if (this.running && !this.hiddenFrameLoopActive) {
         void this.runHiddenFrameLoop();
       }
-      return;
-    }
-
-    if (this.isTabVisible) {
-      this.animationFrameId = requestAnimationFrame(() => this.processFrame());
-      return;
-    }
+    }, HIDDEN_LOOP_WATCHDOG_MS);
   }
 
   private checkBreakReminder(now: number): void {
@@ -465,6 +470,7 @@ export class FatigueEngine {
       try {
         this.processingCtx.drawImage(videoFrame, 0, 0, this.processingCanvas.width, this.processingCanvas.height);
         this.runDetection(this.processingCanvas);
+        this.lastHiddenDetectionAt = Date.now();
       } finally {
         videoFrame.close?.();
       }
@@ -485,8 +491,7 @@ export class FatigueEngine {
   private async runHiddenFrameLoop(): Promise<void> {
     if (
       this.hiddenFrameLoopActive ||
-      !this.running ||
-      this.isTabVisible
+      !this.running
     ) {
       return;
     }
@@ -494,7 +499,7 @@ export class FatigueEngine {
     this.hiddenFrameLoopActive = true;
 
     try {
-      while (this.running && !this.isTabVisible) {
+      while (this.running) {
         this.ensureHiddenFrameProviders();
 
         let detected = false;
@@ -522,6 +527,7 @@ export class FatigueEngine {
               } else {
                 this.runDetection(bitmap);
               }
+              this.lastHiddenDetectionAt = Date.now();
               detected = true;
             } finally {
               bitmap.close();
@@ -539,15 +545,34 @@ export class FatigueEngine {
           } else {
             this.runDetection(this.videoElement);
           }
+          this.lastHiddenDetectionAt = Date.now();
           detected = true;
+        }
+
+        if (!detected && this.videoElement) {
+          try {
+            if (this.processingCtx && this.processingCanvas) {
+              this.processingCtx.drawImage(this.videoElement, 0, 0, this.processingCanvas.width, this.processingCanvas.height);
+              this.runDetection(this.processingCanvas);
+            } else {
+              this.runDetection(this.videoElement);
+            }
+            this.lastHiddenDetectionAt = Date.now();
+            detected = true;
+          } catch {
+            // Ignore draw failures while hidden; providers are retried continuously.
+          }
         }
 
         this.checkBreakReminder(Date.now());
         if (!detected) {
+          if (Date.now() - this.lastHiddenDetectionAt > HIDDEN_LOOP_WATCHDOG_MS * 2) {
+            this.closeHiddenTrackReader();
+            this.imageCapture = null;
+          }
           await new Promise(resolve => setTimeout(resolve, HIDDEN_LOOP_BACKOFF_MS));
         } else {
-          // In background mode, if we're not using MediaStreamTrackProcessor, 
-          // we should still yield slightly to avoid a tight loop, but avoid setTimeout(0)
+          // Let stream readers dictate cadence when available; otherwise yield briefly.
           if (!this.hiddenTrackReader) {
             await new Promise(resolve => setTimeout(resolve, 10));
           }
@@ -555,7 +580,7 @@ export class FatigueEngine {
       }
     } finally {
       this.hiddenFrameLoopActive = false;
-      if (this.running && this.isTabVisible) {
+      if (this.running) {
         this.scheduleNextFrame();
       }
     }
@@ -608,7 +633,7 @@ export class FatigueEngine {
       this.openStateStartAt = 0;
       this.lastBlinkAt = 0;
       this.lastResultAt = 0;
-      this.lastVisibleProcessAt = 0;
+      this.lastHiddenDetectionAt = Date.now();
       this.closureSampleCount = 0;
       this.lastFatigueAlertAt = 0;
       this.hiddenFrameLoopActive = false;
@@ -632,7 +657,7 @@ export class FatigueEngine {
       // Request wake lock to keep the tab active
       await this.requestWakeLock();
 
-      void this.processFrame();
+      this.scheduleNextFrame();
       this.startHeartbeat();
     } catch (error) {
       this.running = false;
@@ -679,37 +704,6 @@ export class FatigueEngine {
     }, 1000);
   }
 
-  private async processFrame(): Promise<void> {
-    if (!this.running || !this.faceLandmarker) return;
-
-    if (!this.isTabVisible) {
-      this.scheduleNextFrame();
-      return;
-    }
-
-    const nowPerf = performance.now();
-    if (nowPerf - this.lastVisibleProcessAt < VISIBLE_FRAME_INTERVAL_MS) {
-      this.scheduleNextFrame();
-      return;
-    }
-    this.lastVisibleProcessAt = nowPerf;
-
-    if (this.videoElement && this.videoElement.readyState >= 2) {
-      if (this.processingCtx && this.processingCanvas) {
-        this.processingCtx.drawImage(this.videoElement, 0, 0, this.processingCanvas.width, this.processingCanvas.height);
-        this.runDetection(this.processingCanvas);
-      } else {
-        this.runDetection(this.videoElement);
-      }
-    } else if (this.videoElement && this.videoElement.readyState === 0) {
-      // Camera might be off or covered if stream is attached but no frames
-      this.handleUnknownTrackingFrame(Date.now());
-    }
-
-    this.checkBreakReminder(Date.now());
-    this.scheduleNextFrame();
-  }
-
   private processResults(results: FaceLandmarkerResults): void {
     const now = Date.now();
     
@@ -728,7 +722,9 @@ export class FatigueEngine {
     // Auto-resume if it was auto-paused
     if (this.isPaused && this.isAutoPaused) {
       this.resume();
-      this.onAlert('info', 'Face detected. Resuming session.');
+      if (this.isTabVisible) {
+        this.onAlert('info', 'Face detected. Resuming session.');
+      }
     }
 
     if (this.isPaused) {
@@ -748,10 +744,6 @@ export class FatigueEngine {
     const pitch = calculateHeadPitch(landmarks);
 
     // DEBUG: Log key metrics periodically OR when a blink is potentially happening
-    if ((now % 1000 < 50) || (eyeBlinkLeft > 0.4 || eyeBlinkRight > 0.4)) {
-      console.log(`[FatigueEngine] State: ${this.currentState}, Pitch: ${pitch.toFixed(1)}, L: ${eyeBlinkLeft.toFixed(2)}, R: ${eyeBlinkRight.toFixed(2)}`);
-    }
-
     // Reject unstable frames
     if (
       pitch > 30 || pitch < -20 ||   // extreme angles
@@ -796,9 +788,7 @@ export class FatigueEngine {
     this.unknownStateStartAt = 0;
 
     // 🔥 MUCH more stable than EAR
-    const eyesCurrentlyClosed =
-      eyeBlinkLeft > 0.4 &&
-      eyeBlinkRight > 0.4;
+    const eyesCurrentlyClosed = areEyesClosed(eyeBlinkLeft, eyeBlinkRight);
 
     if (eyesCurrentlyClosed) {
       this.openStateStartAt = 0;
@@ -964,11 +954,11 @@ export class FatigueEngine {
 
   private handleUnknownTrackingFrame(now: number): void {
     const noFaceDuration = now - this.lastFaceDetectedAt;
+    const autoPauseThreshold = this.isTabVisible ? AUTO_PAUSE_THRESHOLD_MS : AUTO_PAUSE_THRESHOLD_HIDDEN_MS;
     
-    if (noFaceDuration >= AUTO_PAUSE_THRESHOLD_MS && !this.isPaused) {
+    if (noFaceDuration >= autoPauseThreshold && !this.isPaused) {
       this.cameraStatus = 'covered';
       this.pause(true);
-      this.onAlert('info', 'No face detected for 20s. Session auto-paused.');
     }
 
     if (!this.eyesClosed) return;

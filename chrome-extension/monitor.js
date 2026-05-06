@@ -1,14 +1,13 @@
 import { FaceLandmarker, FilesetResolver } from './lib/vision_bundle.js';
 
-const LEFT_EYE = [362, 385, 387, 263, 373, 380];
-const RIGHT_EYE = [33, 160, 158, 133, 153, 144];
-const BLINK_MIN_MS = 50;
+const BLINK_MIN_MS = 35;
 const DROWSINESS_THRESHOLD_MS = 1500;
 const BLINK_REFRACTORY_MS = 80;
 const REOPEN_STABILITY_MS = 90;
 const HIDDEN_READER_TIMEOUT_MS = 280;
 const HIDDEN_GRAB_TIMEOUT_MS = 280;
 const HIDDEN_LOOP_INTERVAL_MS = 150; 
+const HIDDEN_LOOP_WATCHDOG_MS = 800;
 const VISIBLE_FRAME_INTERVAL_MS = 100;
 const UNKNOWN_FRAME_RESET_MS = 2500;
 const BACKGROUND_SPARSE_GAP_MS = 700;
@@ -32,6 +31,7 @@ let rafId = null;
 let imageCapture = null;
 let hiddenFrameReader = null;
 let hiddenFrameLoopActive = false;
+let hiddenLoopWatchdogId = null;
 let isTabVisible = document.visibilityState === 'visible';
 let unknownStateStartAt = 0;
 let lastResultAt = 0;
@@ -50,6 +50,7 @@ processingCanvas.width = 640;
 processingCanvas.height = 480;
 
 const AUTO_PAUSE_THRESHOLD_MS = 20000;
+const AUTO_PAUSE_THRESHOLD_HIDDEN_MS = 90000;
 
 let lowBlinkRate = 15;
 let openStateStartAt = 0;
@@ -74,6 +75,13 @@ function getBlendshapeScore(blendshapes, name) {
   return blendshapes.find(b => b.categoryName === name)?.score ?? 0;
 }
 
+function areEyesClosed(left, right) {
+  if (left > 0.35 && right > 0.35) return true;
+  if (left > 0.55 && right > 0.2) return true;
+  if (right > 0.55 && left > 0.2) return true;
+  return false;
+}
+
 function calculateHeadPitch(landmarks) {
   const chin = landmarks[152];
   const forehead = landmarks[10];
@@ -90,7 +98,7 @@ document.addEventListener('visibilitychange', () => {
 
   if (isTabVisible && !wasVisible) {
     clearFrameLoopHandles();
-    processFrame();
+    scheduleNextFrame();
   } else if (!isTabVisible) {
     ensureHiddenCaptureProviders();
     clearFrameLoopHandles();
@@ -162,7 +170,7 @@ async function resumeSession() {
   chrome.runtime.sendMessage({ action: 'monitorMetrics', data: buildSessionData() }).catch(() => undefined);
 }
 
-function calculateFatigueScore(sessionMinutes, blinkRate, currentBlinkRate, now) {
+function calculateFatigueScore(sessionMinutes, currentBlinkRate, now) {
   function sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
   const normalizedPerclos = perclosValue / 25;
   const perclosWeight = sigmoid((normalizedPerclos - 0.5) * 6) * 25;
@@ -214,8 +222,7 @@ function buildSessionData() {
   const normalizedMinutes = Math.max(durationMinutes, 1);
   const sessionAvgBlinkRate = durationMinutes > 0 ? Math.round(blinkCount / normalizedMinutes) : 0;
   
-  const effectiveBlinkRate = currentBlinkRate > 0 ? currentBlinkRate : sessionAvgBlinkRate;
-  const fatigueScore = calculateFatigueScore(durationMinutes, effectiveBlinkRate, currentBlinkRate, now);
+  const fatigueScore = calculateFatigueScore(durationMinutes, currentBlinkRate, now);
 
   let fatigueLevel = 'Fresh';
   if (fatigueScore > 70) fatigueLevel = 'High Fatigue';
@@ -266,6 +273,7 @@ function updatePERCLOS(now) {
 
 function clearFrameLoopHandles() {
   if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  if (hiddenLoopWatchdogId) { clearTimeout(hiddenLoopWatchdogId); hiddenLoopWatchdogId = null; }
 }
 
 function createHiddenTrackReader(track) {
@@ -297,20 +305,21 @@ function ensureHiddenCaptureProviders() {
 function scheduleNextFrame() {
   if (!sessionActive) return;
   clearFrameLoopHandles();
-  if (!isTabVisible) {
-    ensureHiddenCaptureProviders();
-    if (!hiddenFrameLoopActive) void runHiddenFrameLoop();
-  } else {
-    rafId = requestAnimationFrame(processFrame);
-  }
+  ensureHiddenCaptureProviders();
+  if (!hiddenFrameLoopActive) void runHiddenFrameLoop();
+  hiddenLoopWatchdogId = setTimeout(() => {
+    if (sessionActive && !hiddenFrameLoopActive) {
+      void runHiddenFrameLoop();
+    }
+  }, HIDDEN_LOOP_WATCHDOG_MS);
 }
 
 async function runHiddenFrameLoop() {
-  if (hiddenFrameLoopActive || !sessionActive || isTabVisible) return;
+  if (hiddenFrameLoopActive || !sessionActive) return;
   hiddenFrameLoopActive = true;
 
   try {
-    while (sessionActive && !isTabVisible) {
+    while (sessionActive) {
       const loopStart = performance.now();
       ensureHiddenCaptureProviders();
       let detected = false;
@@ -366,13 +375,18 @@ async function runHiddenFrameLoop() {
       }
 
       if (!detected) {
+        try {
+          processingCtx.drawImage(videoElement, 0, 0, processingCanvas.width, processingCanvas.height);
+          onFaceLandmarkerResults(faceLandmarker.detectForVideo(processingCanvas, performance.now()));
+          detected = true;
+        } catch (e) {}
+      }
+
+      if (!detected) {
         const processingTime = performance.now() - loopStart;
         const delay = Math.max(10, HIDDEN_LOOP_INTERVAL_MS - processingTime);
         await new Promise(resolve => setTimeout(resolve, delay));
       } else {
-        // Yield to let other async tasks run without being heavily throttled by background setTimeout(0)
-        // For MediaStreamTrackProcessor.read(), the read itself provides the natural throttle.
-        // For fallback sources, we use a very small delay.
         if (!hiddenFrameReader) {
           await new Promise(resolve => setTimeout(resolve, 10));
         }
@@ -380,7 +394,7 @@ async function runHiddenFrameLoop() {
     }
   } finally {
     hiddenFrameLoopActive = false;
-    if (sessionActive && isTabVisible) scheduleNextFrame();
+    if (sessionActive) scheduleNextFrame();
   }
 }
 
@@ -432,7 +446,7 @@ async function startSession() {
       chrome.runtime.sendMessage({ action: 'monitorMetrics', data: buildSessionData() }).catch(() => undefined);
     }, 1000);
     chrome.runtime.sendMessage({ action: 'monitorStarted', data: buildSessionData() }).catch(() => undefined);
-    processFrame();
+    scheduleNextFrame();
   } catch (err) {
     sessionActive = false;
   } finally {
@@ -462,7 +476,8 @@ function resetClosureTracking() {
 
 function handleUnknownTrackingFrame(now) {
   const noFaceDuration = now - lastFaceDetectedAt;
-  if (noFaceDuration >= AUTO_PAUSE_THRESHOLD_MS && !isPaused) {
+  const autoPauseThreshold = isTabVisible ? AUTO_PAUSE_THRESHOLD_MS : AUTO_PAUSE_THRESHOLD_HIDDEN_MS;
+  if (noFaceDuration >= autoPauseThreshold && !isPaused) {
     cameraStatus = 'covered';
     pauseSession(true);
   }
@@ -477,9 +492,6 @@ function handleUnknownTrackingFrame(now) {
     resetClosureTracking();
   }
 }
-
-const MAX_EYE_ASYMMETRY_RATIO = 1.8;
-const MIN_VALID_EYE_WIDTH = 0.012;
 
 function onFaceLandmarkerResults(results) {
   const now = Date.now();
@@ -546,7 +558,7 @@ function onFaceLandmarkerResults(results) {
 
   unknownStateStartAt = 0;
 
-  const eyesCurrentlyClosed = eyeBlinkLeft > 0.4 && eyeBlinkRight > 0.4;
+  const eyesCurrentlyClosed = areEyesClosed(eyeBlinkLeft, eyeBlinkRight);
 
   if (eyesCurrentlyClosed) {
     openStateStartAt = 0;
@@ -611,24 +623,6 @@ function onFaceLandmarkerResults(results) {
   updatePERCLOS(now);
 }
 
-let lastVideoTime = -1;
-async function processFrame() {
-  if (!sessionActive || !isTabVisible) {
-    if (sessionActive) scheduleNextFrame();
-    return;
-  }
-
-  const now = performance.now();
-  if (videoElement.readyState >= 2) {
-    if (now - lastVideoTime >= VISIBLE_FRAME_INTERVAL_MS) {
-      lastVideoTime = now;
-      processingCtx.drawImage(videoElement, 0, 0, processingCanvas.width, processingCanvas.height);
-      try { onFaceLandmarkerResults(faceLandmarker.detectForVideo(processingCanvas, now)); } catch (err) {}
-    }
-  }
-  scheduleNextFrame();
-}
-
 /**
  * INVINCIBLE CLEANUP - Kills media tracks and releases hardware locks
  */
@@ -680,4 +674,3 @@ setInterval(() => {
 }, 1000);
 
 window.addEventListener('beforeunload', stopSession);
-

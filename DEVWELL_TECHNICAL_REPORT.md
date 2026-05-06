@@ -32,7 +32,7 @@ Camera Stream → MediaPipe Face Mesh → Blendshapes & Landmarks
 
 | Parameter | Default Value | Description |
 |-----------|---------------|-------------|
-| Eye Closure Threshold | > 0.5 | Blendshape score threshold for "eyes closed" |
+| Eye Closure Threshold | > 0.4 (both eyes) | Blendshape threshold for "eyes closed" |
 | Drowsiness Threshold | ≥1500ms | Long-eye-closure event (Microsleep) |
 | PERCLOS Window | 60 seconds | Rolling window for closure percentage |
 | High Fatigue (PERCLOS) | 25% | Revised threshold for high fatigue contribution |
@@ -101,7 +101,7 @@ The DevWell engine utilizes a combination of 3D physical geometry and AI express
 *   **What we check:** We use "Blendshapes" (high-level AI classifications of facial expressions) rather than measuring raw distances between eyelids, making it highly resistant to perspective distortion.
 *   **How we check it:**
     *   We evaluate the `eyeBlinkLeft` and `eyeBlinkRight` categories from the Face Landmarker, which range from **0.0** (fully open) to **1.0** (fully closed).
-    *   **Rules:** We require **both** eyes to have a score **> 0.5** to count as "Closed." This prevents winking or natural asymmetrical squinting from being miscounted.
+    *   **Rules:** We require **both** eyes to have a score **> 0.4** to count as "Closed." This prevents winking or natural asymmetrical squinting from being miscounted.
     *   **Noise Filtering:** A closure is only recorded for PERCLOS calculation if it lasts at least **200ms** and is captured across at least **3 consecutive frames**.
 
 #### 3. Attention State Machine (Hysteresis & Gating)
@@ -115,7 +115,12 @@ The DevWell engine utilizes a combination of 3D physical geometry and AI express
 *   **How we check it:**
     *   The `start` and `end` timestamps of every valid blink/closure are recorded.
     *   We sum the total milliseconds the eyes were closed in the last 60 seconds and divide by 60,000ms.
-    *   **Rules:** If the eyes are closed for **25%** of a minute, the PERCLOS weight hits its maximum value (40 pts), signaling high drowsiness.
+    *   **Rules:** If the eyes are closed for **25%** of a minute, the PERCLOS contribution reaches its configured maximum (25 pts), signaling high drowsiness.
+
+### Browser Compatibility and Background Processing
+- Primary supported platforms are Chromium-based browsers (Chrome/Edge/Brave) and Firefox via the dedicated extension build.
+- Hidden-tab tracking uses a progressive strategy: `MediaStreamTrackProcessor` when available, then `ImageCapture`, then video frame draw fallback.
+- Safari/iOS are currently out of scope for extension parity because required background capture APIs and extension runtime behavior differ substantially.
 
 ### Pause, Break, and Auto-Pause
 DevWell incorporates robust session management to ensure fatigue scores are not artificially inflated during breaks or interruptions.
