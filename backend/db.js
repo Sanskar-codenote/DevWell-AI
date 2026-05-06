@@ -49,6 +49,22 @@ async function initDB() {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS otp_codes (
+        id SERIAL PRIMARY KEY,
+        email VARCHAR(255) NOT NULL,
+        code VARCHAR(10) NOT NULL,
+        purpose VARCHAR(20) NOT NULL DEFAULT 'register',
+        expires_at TIMESTAMPTZ NOT NULL,
+        used BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      ALTER TABLE otp_codes ADD COLUMN IF NOT EXISTS purpose VARCHAR(20) NOT NULL DEFAULT 'register';
+
+      CREATE INDEX IF NOT EXISTS idx_otp_codes_email ON otp_codes(email);
+      CREATE INDEX IF NOT EXISTS idx_otp_codes_email_purpose ON otp_codes(email, purpose);
+      CREATE INDEX IF NOT EXISTS idx_otp_codes_expires ON otp_codes(expires_at);
+
       CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
       CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(session_date);
       CREATE INDEX IF NOT EXISTS idx_sessions_user_id_date ON sessions(user_id, session_date);

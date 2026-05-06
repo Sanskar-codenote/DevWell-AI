@@ -126,8 +126,19 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 3, // limit each IP to 3 OTP requests per windowMs
+  message: { error: 'Too many verification requests, please try again after 15 minutes' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 app.use('/api/v1/auth/login', authLimiter);
 app.use('/api/v1/auth/register', authLimiter);
+app.use('/api/v1/auth/send-otp', otpLimiter);
+app.use('/api/v1/auth/forgot-password', otpLimiter);
+app.use('/api/v1/auth/reset-password', authLimiter);
 
 // ─── Routes ─────────────────────────────────────────────────────────────────
 app.use('/api/v1/auth', authRoutes);

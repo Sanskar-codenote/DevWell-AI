@@ -6,6 +6,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import ProtectedLayout from './components/ProtectedLayout';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
+import ForgotPasswordPage from './pages/ForgotPasswordPage';
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
@@ -29,6 +30,7 @@ export default function App() {
               <Routes>
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/register" element={<RegisterPage />} />
+                <Route path="/forgot-password" element={<ForgotPasswordPage />} />
                 <Route element={<ProtectedLayout />}>
                   <Route path="/dashboard" element={<DashboardPage />} />
                   <Route path="/analytics" element={<AnalyticsPage />} />

@@ -14,7 +14,10 @@ interface User {
 interface AuthContextType {
   user: User | null;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string) => Promise<void>;
+  register: (email: string, password: string, otp: string) => Promise<void>;
+  sendOtp: (email: string) => Promise<void>;
+  sendForgotPasswordOtp: (email: string) => Promise<void>;
+  resetPassword: (email: string, otp: string, password: string) => Promise<void>;
   logout: () => void;
   loading: boolean;
 }
@@ -113,18 +116,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearPersistedSession();
   };
 
-  const register = async (email: string, password: string) => {
+  const register = async (email: string, password: string, otp: string) => {
     const mismatchMessage = getExtensionEmailMismatchMessage(email);
     if (mismatchMessage) {
       throw new Error(mismatchMessage);
     }
 
-    const res = await api.post('/auth/register', { email, password });
+    const res = await api.post('/auth/register', { email, password, otp });
     localStorage.setItem('devwell_token', res.data.token);
     setToken(res.data.token);
     setUser(res.data.user);
 
     clearPersistedSession();
+  };
+
+  const sendOtp = async (email: string) => {
+    await api.post('/auth/send-otp', { email });
+  };
+
+  const sendForgotPasswordOtp = async (email: string) => {
+    await api.post('/auth/forgot-password', { email });
+  };
+
+  const resetPassword = async (email: string, otp: string, password: string) => {
+    await api.post('/auth/reset-password', { email, otp, password });
   };
 
   const logout = () => {
@@ -136,7 +151,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, register, logout, loading }}>
+    <AuthContext.Provider value={{ user, login, register, sendOtp, sendForgotPasswordOtp, resetPassword, logout, loading }}>
       {children}
     </AuthContext.Provider>
   );

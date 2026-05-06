@@ -45,6 +45,23 @@ The backend service for DevWell AI, providing authentication, session management
 | `DB_NAME` | PostgreSQL database name | (Required) |
 | `EXTENSION_ID` | Authorized Chrome Extension ID | (Optional in dev) |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated list of allowed origins | (Localhost) |
+| `SMTP_HOST` | SMTP server hostname | (Optional) |
+| `SMTP_PORT` | SMTP server port | (Optional) |
+| `SMTP_USER` | SMTP authentication username | (Optional) |
+| `SMTP_PASS` | SMTP authentication password / app password | (Optional) |
+| `SMTP_FROM` | Sender email address for OTP emails | (Optional) |
+
+## OTP / Email Configuration
+To enable real email delivery for signup verification codes, configure the `SMTP_*` variables in your `.env` file. If SMTP is not configured, OTPs are printed to the server console only (useful for local development).
+
+### Gmail / Google Workspace
+1. Enable **2-Factor Authentication** on your Google account.
+2. Generate an **App Password** at [https://myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) (select app: *Mail*, device: *Other*).
+3. Copy the 16-character password into `SMTP_PASS`.
+4. Use your full Gmail address for both `SMTP_USER` and `SMTP_FROM`.
+
+### SendGrid
+Use `smtp.sendgrid.net:587` with `SMTP_USER=apikey` and your SendGrid API key as `SMTP_PASS`.
 
 ## Development Note
 In production mode (`NODE_ENV=production`), the server strictly validates the `EXTENSION_ID`. For local development within Docker, this check is relaxed to a warning to facilitate testing with varying extension IDs.
