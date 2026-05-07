@@ -1,6 +1,14 @@
 let currentPeriod = 'weekly';
 let allSessions = [];
 
+function formatDuration(minutes) {
+  const h = Math.floor(minutes / 60);
+  const m = Math.floor(minutes % 60);
+  const s = Math.floor((minutes * 60) % 60);
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  return `${m}m ${s}s`;
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   setupTabButtons();
   await refreshAnalyticsView();
@@ -77,7 +85,7 @@ function setupTabButtons() {
 function updateStatsGrid(sessions) {
   const totalSessions = sessions.length;
   const totalTime = sessions.reduce((sum, s) => sum + (s.durationMinutes || 0), 0);
-  const totalTimeDisplay = Number(totalTime.toFixed(1));
+  const totalTimeDisplay = formatDuration(totalTime);
   const avgFatigue = totalSessions > 0 ? (sessions.reduce((sum, s) => sum + (s.fatigueScore || 0), 0) / totalSessions).toFixed(1) : 0;
   const avgBlinkRate = totalSessions > 0 ? (sessions.reduce((sum, s) => sum + (s.blinkRate || 0), 0) / totalSessions).toFixed(1) : 0;
   const avgPerclos = totalSessions > 0 ? (sessions.reduce((sum, s) => sum + (s.perclos || 0), 0) / totalSessions).toFixed(1) : 0;
@@ -311,7 +319,7 @@ function renderInsights(sessions) {
   const avgFatigueScore = (totalFatigueScores / sessions.length).toFixed(1);
 
   const totalDuration = sessions.reduce((sum, s) => sum + (s.durationMinutes || 0), 0);
-  const avgDuration = (totalDuration / sessions.length).toFixed(1);
+  const avgDuration = formatDuration(totalDuration / sessions.length);
 
   // Find best and worst sessions
   const bestSession = sessions.reduce((best, s) => (
@@ -334,7 +342,7 @@ function renderInsights(sessions) {
       <div class="content">
         <strong>Blink Rate:</strong> ${avgBlinkRate} BPM<br>
         <strong>Fatigue Score:</strong> ${avgFatigueScore}%<br>
-        <strong>Session Duration:</strong> ${avgDuration} minutes
+        <strong>Session Duration:</strong> ${avgDuration}
       </div>
     </div>
     <div class="insight-card">

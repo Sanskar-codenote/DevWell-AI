@@ -257,9 +257,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const id = ++alertIdRef.current;
     setAlerts((prev) => [...prev.slice(-4), { id, type, message }]);
 
-    const isFatigueNotification = type === 'fatigue_moderate' || type === 'fatigue_high';
-    if (isFatigueNotification && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      new Notification('DevWell AI Fatigue Alert', { body: message });
+    const isDesktopNotificationType =
+      type === 'fatigue_moderate' ||
+      type === 'fatigue_high' ||
+      type === 'break';
+    if (isDesktopNotificationType && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      const title = type === 'break' ? 'DevWell AI Break Reminder' : 'DevWell AI Fatigue Alert';
+      new Notification(title, { body: message, icon: '/devwell_ai_logo.png' });
     }
 
     if (type === 'fatigue_high') {

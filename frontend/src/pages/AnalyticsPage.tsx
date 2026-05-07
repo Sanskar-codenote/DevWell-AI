@@ -38,6 +38,14 @@ interface SessionRecord {
 const burnoutColors = { LOW: 'emerald', MEDIUM: 'amber', HIGH: 'red' } as const;
 const SESSIONS_PER_PAGE = 10;
 
+function formatDuration(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = Math.floor(minutes % 60);
+  const s = Math.floor((minutes * 60) % 60);
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  return `${m}m ${s}s`;
+}
+
 interface ChartTooltipEntry {
   color?: string;
   name?: string;
@@ -208,7 +216,7 @@ export default function AnalyticsPage() {
             <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">Longest Session</span>
             <Clock className="h-4 w-4 text-slate-600" />
           </div>
-          <p className="text-2xl font-bold text-white">{Math.round(weekly?.longest_session ?? 0)}<span className="text-sm text-slate-500 ml-1">min</span></p>
+          <p className="text-2xl font-bold text-white">{formatDuration(weekly?.longest_session ?? 0)}</p>
         </div>
 
         <div className={`bg-${bColor}-500/5 border border-${bColor}-500/20 rounded-2xl p-5`}
@@ -349,7 +357,7 @@ export default function AnalyticsPage() {
               {sessions.map((s) => (
                 <tr key={s.id} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
                   <td className="py-3 px-3 text-sm text-white">{formatDate(s.session_date)}</td>
-                  <td className="py-3 px-3 text-sm text-slate-300">{Math.round(s.duration_minutes)} min</td>
+                  <td className="py-3 px-3 text-sm text-slate-300">{formatDuration(s.duration_minutes)}</td>
                   <td className="py-3 px-3 text-sm text-slate-300">{parseFloat(String(s.avg_blink_rate)).toFixed(1)}/min</td>
                   <td className="py-3 px-3">
                     <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${
