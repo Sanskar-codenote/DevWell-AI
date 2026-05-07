@@ -28,6 +28,18 @@ function getFatigueRingColor(score: number): string {
   return '#f87171';
 }
 
+function getTrackingLabel(quality?: 'good' | 'limited' | 'poor'): string {
+  if (quality === 'poor') return 'Poor';
+  if (quality === 'limited') return 'Limited';
+  return 'Good';
+}
+
+function getTrackingClass(quality?: 'good' | 'limited' | 'poor'): string {
+  if (quality === 'poor') return 'text-red-400 bg-red-500/10 border-red-500/30';
+  if (quality === 'limited') return 'text-amber-400 bg-amber-500/10 border-amber-500/30';
+  return 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30';
+}
+
 export default function DashboardPage() {
   const {
     state, alerts, sessionSummary, saving, videoRef, isStarting, isSessionOwner, extensionAvailable, extensionAuthMismatch,
@@ -418,6 +430,12 @@ export default function DashboardPage() {
                 <p className="text-xs text-slate-500">Drowsy Events</p>
                 <p className="text-lg font-bold text-amber-400">{state.longClosureEvents}</p>
               </div>
+            </div>
+            <div className="mt-3 flex items-center justify-between">
+              <p className="text-xs text-slate-500">Tracking Quality</p>
+              <span className={`text-xs font-semibold px-2 py-1 rounded-md border ${getTrackingClass(state.trackingQuality)}`}>
+                {getTrackingLabel(state.trackingQuality)}
+              </span>
             </div>
           </div>
         </div>

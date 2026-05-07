@@ -12,6 +12,8 @@ const DEFAULT_STATE = {
   eyesOpen: true,
   sessionDurationMinutes: 0,
   isRunning: false,
+  trackingQuality: 'good',
+  attentionState: 'ATTENTIVE',
 };
 
 class DevWellContentScript {

@@ -275,6 +275,22 @@ body {
   color: var(--text-primary);
 }
 
+.metric-tracking {
+  font-size: 16px;
+}
+
+.quality-good {
+  color: var(--accent-success);
+}
+
+.quality-limited {
+  color: var(--accent-warning);
+}
+
+.quality-poor {
+  color: var(--accent-danger);
+}
+
 .fatigue-section {
   background: var(--bg-secondary);
   padding: 16px;

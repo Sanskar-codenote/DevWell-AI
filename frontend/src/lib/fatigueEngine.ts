@@ -19,6 +19,7 @@ export interface FatigueState {
   lowBlinkRate: number;
   perclos: number;
   attentionState?: AttentionState;
+  trackingQuality?: 'good' | 'limited' | 'poor';
 }
 
 
@@ -141,11 +142,17 @@ const HIDDEN_READER_TIMEOUT_MS = 280;
 const HIDDEN_GRAB_TIMEOUT_MS = 280;
 const HIDDEN_LOOP_BACKOFF_MS = 40;
 const HIDDEN_LOOP_WATCHDOG_MS = 800;
-const BACKGROUND_DROWSY_MIN_CLOSED_SAMPLES = 3;
-const BACKGROUND_SPARSE_GAP_MS = 700;
+const BACKGROUND_MIN_CLOSED_SAMPLES = 5;
+const DROWSY_EVENT_COOLDOWN_MS = 10000;
 const AUTO_PAUSE_THRESHOLD_MS = 20000; // 20 seconds of no face = auto-pause
 const AUTO_PAUSE_THRESHOLD_HIDDEN_MS = 90000; // More tolerant in hidden tabs
 const PERCLOS_WINDOW_MS = 60 * 1000; // 1 minute rolling window for PERCLOS
+const MAX_VISIBLE_FRAME_GAP_MS = 450;
+const MAX_HIDDEN_FRAME_GAP_MS = 900;
+const MAX_METRIC_PITCH_DEG = 22;
+const MIN_METRIC_PITCH_DEG = -15;
+const MAX_EYE_ASYMMETRY = 0.65;
+const MIN_FACE_BBOX_AREA = 0.035;
 
 interface NotificationSettings {
   lowFatigueThreshold: number;
@@ -199,6 +206,9 @@ export class FatigueEngine {
   private cameraStatus: FatigueState['cameraStatus'] = 'inactive';
   private lastFaceDetectedAt = 0;
   private isTabVisible = typeof document !== 'undefined' ? document.visibilityState === 'visible' : true; 
+  private isWindowFocused = typeof document !== 'undefined' && typeof document.hasFocus === 'function'
+    ? document.hasFocus()
+    : true;
   private wakeLock: WakeLockSentinel | null = null; // Keep screen awake
   private lastFatigueAlertAt = 0;
   private unknownStateStartAt = 0;
@@ -207,6 +217,7 @@ export class FatigueEngine {
   private closureSampleCount = 0;
   private lastResultAt = 0;
   private lastHiddenDetectionAt = 0;
+  private lastDrowsyEventAt = 0;
 
   // PERCLOS tracking
   private perclosValue = 0;
@@ -221,6 +232,7 @@ export class FatigueEngine {
 
   private blinkIntervals: number[] = [];
   private recentClosures: number[] = [];
+  private trackingQuality: 'good' | 'limited' | 'poor' = 'good';
 
   private processingCanvas: HTMLCanvasElement | null = null;
   private processingCtx: CanvasRenderingContext2D | null = null;
@@ -239,6 +251,7 @@ export class FatigueEngine {
       this.processingCtx = this.processingCanvas.getContext('2d', { willReadFrequently: true });
       document.addEventListener('visibilitychange', () => {
         this.isTabVisible = document.visibilityState === 'visible';
+        this.isWindowFocused = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
 
         if (this.isTabVisible) {
           console.log('[DevWell] Tab is now visible, resuming normal processing');
@@ -253,7 +266,62 @@ export class FatigueEngine {
           this.scheduleNextFrame();
         }
       });
+
+      window.addEventListener('focus', () => {
+        this.isWindowFocused = true;
+      });
+
+      window.addEventListener('blur', () => {
+        this.isWindowFocused = false;
+      });
     }
+  }
+
+  private getFaceBoundingBoxArea(landmarks: FaceLandmark[]): number {
+    if (!Array.isArray(landmarks) || landmarks.length === 0) return 0;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    for (const point of landmarks) {
+      if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) continue;
+      minX = Math.min(minX, point.x);
+      maxX = Math.max(maxX, point.x);
+      minY = Math.min(minY, point.y);
+      maxY = Math.max(maxY, point.y);
+    }
+
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+      return 0;
+    }
+
+    const width = Math.max(0, maxX - minX);
+    const height = Math.max(0, maxY - minY);
+    return width * height;
+  }
+
+  private evaluateFrameQuality(
+    frameGap: number,
+    isBackground: boolean,
+    pitch: number,
+    eyeBlinkLeft: number,
+    eyeBlinkRight: number,
+    landmarks: FaceLandmark[]
+  ): boolean {
+    if (!Number.isFinite(eyeBlinkLeft) || !Number.isFinite(eyeBlinkRight)) return false;
+    if (eyeBlinkLeft < 0 || eyeBlinkLeft > 1 || eyeBlinkRight < 0 || eyeBlinkRight > 1) return false;
+
+    const maxFrameGap = isBackground ? MAX_HIDDEN_FRAME_GAP_MS : MAX_VISIBLE_FRAME_GAP_MS;
+    if (frameGap > 0 && frameGap > maxFrameGap) return false;
+
+    if (!Number.isFinite(pitch) || pitch > MAX_METRIC_PITCH_DEG || pitch < MIN_METRIC_PITCH_DEG) return false;
+    if (Math.abs(eyeBlinkLeft - eyeBlinkRight) > MAX_EYE_ASYMMETRY) return false;
+
+    const faceArea = this.getFaceBoundingBoxArea(landmarks);
+    if (!Number.isFinite(faceArea) || faceArea < MIN_FACE_BBOX_AREA) return false;
+
+    return true;
   }
 
   public pause(isAuto: boolean = false): void {
@@ -610,6 +678,7 @@ export class FatigueEngine {
         this.sessionAvgBlinkRate = restoredSessionAvg;
         // Current blink rate starts at 0 (no blinks in last 60s yet)
         this.currentBlinkRate = 0;
+        this.lastDrowsyEventAt = 0;
       } else {
         // Fresh session
         this.sessionStart = Date.now();
@@ -619,6 +688,7 @@ export class FatigueEngine {
         this.blinkHistory = [];
         this.sessionAvgBlinkRate = 0;
         this.currentBlinkRate = 0;
+        this.lastDrowsyEventAt = 0;
       }
       
       this.running = true;
@@ -736,7 +806,7 @@ export class FatigueEngine {
 
     const frameGap = this.lastResultAt > 0 ? now - this.lastResultAt : 0;
     this.lastResultAt = now;
-    const isBackground = !this.isTabVisible;
+    const isBackground = !this.isTabVisible || !this.isWindowFocused;
 
     const blendshapes = (results as FaceLandmarkerBlendshapesResult).faceBlendshapes?.[0]?.categories ?? [];
     const eyeBlinkLeft = getBlendshapeScore(blendshapes, 'eyeBlinkLeft');
@@ -749,6 +819,7 @@ export class FatigueEngine {
       pitch > 30 || pitch < -20 ||   // extreme angles
       !Number.isFinite(pitch)
     ) {
+      this.trackingQuality = 'poor';
       this.emitState();
       return;
     }
@@ -776,6 +847,7 @@ export class FatigueEngine {
     }
 
     if (this.currentState !== 'ATTENTIVE') {
+      this.trackingQuality = 'limited';
       // 🔥 CRITICAL: wipe ALL corrupted signals
       this.resetClosureTracking();
       this.eyeClosureHistory = [];
@@ -786,6 +858,13 @@ export class FatigueEngine {
     }
     
     this.unknownStateStartAt = 0;
+    if (!this.evaluateFrameQuality(frameGap, isBackground, pitch, eyeBlinkLeft, eyeBlinkRight, landmarks)) {
+      this.trackingQuality = 'poor';
+      this.resetClosureTracking();
+      this.emitState();
+      return;
+    }
+    this.trackingQuality = 'good';
 
     // 🔥 MUCH more stable than EAR
     const eyesCurrentlyClosed = areEyesClosed(eyeBlinkLeft, eyeBlinkRight);
@@ -806,10 +885,12 @@ export class FatigueEngine {
       const closedDuration = now - this.eyeClosedStart;
       if (
         closedDuration >= DROWSINESS_THRESHOLD_MS &&
-        (!isBackground || this.closureSampleCount >= BACKGROUND_DROWSY_MIN_CLOSED_SAMPLES) &&
+        (!isBackground || this.closureSampleCount >= BACKGROUND_MIN_CLOSED_SAMPLES) &&
+        (now - this.lastDrowsyEventAt >= DROWSY_EVENT_COOLDOWN_MS) &&
         !this.drowsinessCountedForCurrentClosure
       ) {
         this.longClosureEvents++;
+        this.lastDrowsyEventAt = now;
         this.drowsinessCountedForCurrentClosure = true;
       }
     } else {
@@ -834,7 +915,7 @@ export class FatigueEngine {
 
         if (
           closureDuration >= 200 &&
-          (this.closureSampleCount >= 3 || isBackground) &&
+          this.closureSampleCount >= (isBackground ? BACKGROUND_MIN_CLOSED_SAMPLES : 3) &&
           this.currentState === 'ATTENTIVE'
         ) {
           this.eyeClosureHistory.push({
@@ -845,34 +926,21 @@ export class FatigueEngine {
           this.recentClosures = this.recentClosures.filter(t => now - t < 10000);
         }
         
-        const sparseBackgroundClosure =
-          isBackground &&
-          closureDuration >= DROWSINESS_THRESHOLD_MS &&
-          this.closureSampleCount <= 2 &&
-          frameGap >= BACKGROUND_SPARSE_GAP_MS;
-
-        if (sparseBackgroundClosure) {
-          if (now - this.lastBlinkAt >= BLINK_REFRACTORY_MS) {
-            if (this.lastBlinkAt > 0) {
-              const interval = now - this.lastBlinkAt;
-              this.blinkIntervals.push(interval);
-              if (this.blinkIntervals.length > 20) {
-                this.blinkIntervals.shift();
-              }
-            }
-            this.blinkCount++;
-            this.blinkHistory.push(now);
-            this.lastBlinkAt = now;
-          }
-        } else if (closureDuration >= DROWSINESS_THRESHOLD_MS) {
+        if (closureDuration >= DROWSINESS_THRESHOLD_MS) {
           if (!this.drowsinessCountedForCurrentClosure) {
-            this.longClosureEvents++;
-            this.drowsinessCountedForCurrentClosure = true;
+            const drowsySampleRequirementMet = !isBackground || this.closureSampleCount >= BACKGROUND_MIN_CLOSED_SAMPLES;
+            const drowsyCooldownElapsed = now - this.lastDrowsyEventAt >= DROWSY_EVENT_COOLDOWN_MS;
+            if (drowsySampleRequirementMet && drowsyCooldownElapsed) {
+              this.longClosureEvents++;
+              this.lastDrowsyEventAt = now;
+              this.drowsinessCountedForCurrentClosure = true;
+            }
           }
         } else if (
           closureDuration >= BLINK_MIN_MS &&
           closureDuration < DROWSINESS_THRESHOLD_MS &&
-          now - this.lastBlinkAt >= BLINK_REFRACTORY_MS
+          now - this.lastBlinkAt >= BLINK_REFRACTORY_MS &&
+          (!isBackground || this.closureSampleCount >= BACKGROUND_MIN_CLOSED_SAMPLES)
         ) {
           // Valid blink detected
           if (this.lastBlinkAt > 0) {
@@ -954,7 +1022,8 @@ export class FatigueEngine {
 
   private handleUnknownTrackingFrame(now: number): void {
     const noFaceDuration = now - this.lastFaceDetectedAt;
-    const autoPauseThreshold = this.isTabVisible ? AUTO_PAUSE_THRESHOLD_MS : AUTO_PAUSE_THRESHOLD_HIDDEN_MS;
+    const isBackground = !this.isTabVisible || !this.isWindowFocused;
+    const autoPauseThreshold = isBackground ? AUTO_PAUSE_THRESHOLD_HIDDEN_MS : AUTO_PAUSE_THRESHOLD_MS;
     
     if (noFaceDuration >= autoPauseThreshold && !this.isPaused) {
       this.cameraStatus = 'covered';
@@ -968,7 +1037,7 @@ export class FatigueEngine {
     }
 
     if (
-      !this.isTabVisible &&
+      isBackground &&
       now - this.unknownStateStartAt < UNKNOWN_FRAME_RESET_MS
     ) {
       return;
@@ -1102,6 +1171,8 @@ export class FatigueEngine {
       cameraStatus: this.cameraStatus,
       lowBlinkRate: settings.lowBlinkRate,
       perclos: Math.round(this.perclosValue * 10) / 10,
+      attentionState: this.currentState,
+      trackingQuality: this.trackingQuality,
     });
   }
 

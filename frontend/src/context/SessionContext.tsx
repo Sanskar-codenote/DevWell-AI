@@ -46,6 +46,8 @@ const defaultState: FatigueState = {
   cameraStatus: 'inactive',
   lowBlinkRate: getInitialLowBlinkRate(),
   perclos: 0,
+  attentionState: 'ATTENTIVE',
+  trackingQuality: 'good',
 };
 
 interface Alert {

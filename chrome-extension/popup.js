@@ -2,6 +2,11 @@ const APP_BASES = [
   '__APP_BASE_URL__',
 ];
 const API_BASE_URL = '__API_BASE_URL__';
+const POPUP_DEBUG = false;
+
+function debugLog(...args) {
+  if (POPUP_DEBUG) console.log(...args);
+}
 
 class DevWellPopup {
   constructor() {
@@ -47,6 +52,7 @@ class DevWellPopup {
     this.elements.totalBlinks = document.getElementById('totalBlinks');
     this.elements.drowsyEvents = document.getElementById('drowsyEvents');
     this.elements.perclos = document.getElementById('perclos');
+    this.elements.trackingQuality = document.getElementById('trackingQuality');
     this.elements.fatigueScore = document.getElementById('fatigueScore');
     this.elements.fatigueLevel = document.getElementById('fatigueLevel');
     this.elements.progressFill = document.getElementById('progressFill');
@@ -99,11 +105,11 @@ class DevWellPopup {
     });
 
     this.elements.guestModeBtn?.addEventListener('click', async () => {
-      console.log('Guest mode button clicked - entering guest mode');
+      debugLog('Guest mode button clicked - entering guest mode');
       try {
         // Enter guest mode - show the guest mode section in the popup
         this.toggleGuestMode();
-        console.log('Guest mode activated successfully');
+        debugLog('Guest mode activated successfully');
       } catch (err) {
         console.error('Failed to enter guest mode:', err);
         alert('Failed to enter guest mode. Error: ' + err.message);
@@ -149,7 +155,7 @@ class DevWellPopup {
     // Listen for syncSettings messages from background
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.action === 'syncSettings') {
-        console.log('[Popup] Received syncSettings message from background:', message.settings);
+        debugLog('[Popup] Received syncSettings message from background:', message.settings);
         this.settings = message.settings;
         // If settings view is open, update the form
         if (this.elements.settingsSection?.style.display !== 'none') {
@@ -441,6 +447,18 @@ class DevWellPopup {
       this.elements.perclos.textContent = `${this.sessionData?.perclos ?? 0}%`;
     }
 
+    if (this.elements.trackingQuality) {
+      const fallbackQuality = this.sessionData?.attentionState === 'LOOKING_DOWN'
+        ? 'limited'
+        : this.sessionData?.attentionState === 'FACE_LOST'
+          ? 'poor'
+          : 'good';
+      const quality = this.sessionData?.trackingQuality || fallbackQuality;
+      const qualityText = quality === 'poor' ? 'Poor' : quality === 'limited' ? 'Limited' : 'Good';
+      this.elements.trackingQuality.textContent = qualityText;
+      this.elements.trackingQuality.className = `metric-value metric-tracking quality-${quality}`;
+    }
+
     if (this.elements.fatigueScore) {
       this.elements.fatigueScore.textContent = String(fatigueScore);
     }
@@ -598,15 +616,15 @@ class DevWellPopup {
     };
 
     try {
-      console.log('[Extension] Saving settings:', newSettings);
+      debugLog('[Extension] Saving settings:', newSettings);
       
       // Save to extension storage
       await chrome.storage.local.set({ extensionSettings: newSettings });
-      console.log('[Extension] Saved to extensionSettings');
+      debugLog('[Extension] Saved to extensionSettings');
       
       // Also sync to website storage for two-way synchronization
       await chrome.storage.local.set({ websiteSettings: newSettings });
-      console.log('[Extension] Saved to websiteSettings');
+      debugLog('[Extension] Saved to websiteSettings');
       
       this.settings = newSettings;
       this.showSuccess('Settings saved successfully!');
@@ -622,25 +640,25 @@ class DevWellPopup {
 
   async syncSettingsToWebsite(settings) {
     try {
-      console.log('[Extension] Syncing settings to website...');
+      debugLog('[Extension] Syncing settings to website...');
       
       // Check if website is open in any tab
       const tabs = await chrome.tabs.query({
         url: ['__APP_URL_PATTERN__']
       });
       
-      console.log('[Extension] Found website tabs:', tabs.length);
+      debugLog('[Extension] Found website tabs:', tabs.length);
       
       if (tabs.length > 0) {
         // Send message to website to update settings
         for (const tab of tabs) {
           try {
-            console.log('[Extension] Sending message to tab:', tab.id, tab.url);
+            debugLog('[Extension] Sending message to tab:', tab.id, tab.url);
             await chrome.tabs.sendMessage(tab.id, {
               action: 'syncSettings',
               settings: settings
             });
-            console.log('[Extension] Settings synced to website tab:', tab.id);
+            debugLog('[Extension] Settings synced to website tab:', tab.id);
           } catch (err) {
             console.warn('[Extension] Could not sync settings to tab:', tab.id, err);
           }
@@ -675,10 +693,10 @@ class DevWellPopup {
 
   // Guest Mode Methods
   async toggleGuestMode() {
-    console.log('toggleGuestMode called, current state:', this.guestModeActive);
+    debugLog('toggleGuestMode called, current state:', this.guestModeActive);
     const exitingGuestMode = this.guestModeActive;
     this.guestModeActive = !this.guestModeActive;
-    console.log('guestModeActive set to:', this.guestModeActive);
+    debugLog('guestModeActive set to:', this.guestModeActive);
     
     try {
       await chrome.storage.local.set({ guestModeActive: this.guestModeActive });

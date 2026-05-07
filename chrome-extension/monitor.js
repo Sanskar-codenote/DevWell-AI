@@ -12,6 +12,17 @@ const VISIBLE_FRAME_INTERVAL_MS = 100;
 const UNKNOWN_FRAME_RESET_MS = 2500;
 const BACKGROUND_SPARSE_GAP_MS = 700;
 const PERCLOS_WINDOW_MS = 60000;
+const BACKGROUND_MIN_CLOSED_SAMPLES = 3;
+const DROWSY_EVENT_COOLDOWN_MS = 10000;
+const LONG_CLOSURE_WINDOW_MS = 60000;
+const MAX_VISIBLE_FRAME_GAP_MS = 450;
+const MAX_HIDDEN_FRAME_GAP_MS = 900;
+const MAX_METRIC_PITCH_DEG = 22;
+const MIN_METRIC_PITCH_DEG = -15;
+const LOOKING_DOWN_PITCH_DEG = 18;
+const MAX_EYE_ASYMMETRY = 0.65;
+const MIN_FACE_BBOX_AREA = 0.035;
+const HIDDEN_QUALITY_RESUME_STABLE_MS = 1800;
 
 let sessionActive = false;
 let isStarting = false;
@@ -42,6 +53,7 @@ let totalPausedTime = 0;
 let pauseStartAt = 0;
 let faceDetected = false;
 let drowsinessCounted = false;
+let lastDrowsyEventAt = 0;
 let cameraStatus = 'inactive';
 let lastFaceDetectedAt = 0;
 const processingCanvas = document.createElement('canvas');
@@ -63,6 +75,20 @@ let pendingState = 'FACE_LOST';
 let stateHoldStart = 0;
 let blinkIntervals = [];
 let recentClosures = [];
+let recentLongClosures = [];
+let trackingQuality = 'good';
+let lowQualityStartAt = 0;
+let lastClosedSampleAt = 0;
+let freezeHiddenMetrics = false;
+let hiddenStableStartAt = 0;
+let shutdownIntervalId = null;
+let monitorClosing = false;
+
+function logMonitorError(scope, error) {
+  try {
+    console.warn(`[DevWell Monitor] ${scope}:`, error?.message || error);
+  } catch (_) {}
+}
 
 function calculateStdDev(values) {
   if (values.length < 2) return 0;
@@ -91,6 +117,60 @@ function calculateHeadPitch(landmarks) {
   return pitchRad * (180 / Math.PI);
 }
 
+function getFaceBoundingBoxArea(landmarks) {
+  if (!Array.isArray(landmarks) || landmarks.length === 0) return 0;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+
+  for (const point of landmarks) {
+    if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) continue;
+    minX = Math.min(minX, point.x);
+    maxX = Math.max(maxX, point.x);
+    minY = Math.min(minY, point.y);
+    maxY = Math.max(maxY, point.y);
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+    return 0;
+  }
+
+  const width = Math.max(0, maxX - minX);
+  const height = Math.max(0, maxY - minY);
+  return width * height;
+}
+
+function evaluateFrameQuality({ frameGap, isBackground, pitch, eyeBlinkLeft, eyeBlinkRight, landmarks }) {
+  if (!Number.isFinite(eyeBlinkLeft) || !Number.isFinite(eyeBlinkRight)) {
+    return { ok: false, reason: 'invalid_eyes' };
+  }
+
+  if (eyeBlinkLeft < 0 || eyeBlinkLeft > 1 || eyeBlinkRight < 0 || eyeBlinkRight > 1) {
+    return { ok: false, reason: 'eye_range' };
+  }
+
+  const maxFrameGap = isBackground ? MAX_HIDDEN_FRAME_GAP_MS : MAX_VISIBLE_FRAME_GAP_MS;
+  if (frameGap > 0 && frameGap > maxFrameGap) {
+    return { ok: false, reason: 'sparse_frames' };
+  }
+
+  if (!Number.isFinite(pitch) || pitch > MAX_METRIC_PITCH_DEG || pitch < MIN_METRIC_PITCH_DEG) {
+    return { ok: false, reason: 'pose' };
+  }
+
+  if (Math.abs(eyeBlinkLeft - eyeBlinkRight) > MAX_EYE_ASYMMETRY) {
+    return { ok: false, reason: 'eye_asymmetry' };
+  }
+
+  const faceArea = getFaceBoundingBoxArea(landmarks);
+  if (!Number.isFinite(faceArea) || faceArea < MIN_FACE_BBOX_AREA) {
+    return { ok: false, reason: 'small_face' };
+  }
+
+  return { ok: true, reason: 'good' };
+}
+
 document.addEventListener('visibilitychange', () => {
   const wasVisible = isTabVisible;
   isTabVisible = document.visibilityState === 'visible';
@@ -108,14 +188,14 @@ document.addEventListener('visibilitychange', () => {
 
 function stopCamera() {
   if (cameraStream) {
-    cameraStream.getTracks().forEach(t => { try { t.stop(); t.enabled = false; } catch (e) {} });
+    cameraStream.getTracks().forEach(t => { try { t.stop(); t.enabled = false; } catch (e) { logMonitorError('stop track', e); } });
     cameraStream = null;
   }
-  if (cameraTrack) { try { cameraTrack.stop(); } catch(e) {} cameraTrack = null; }
+  if (cameraTrack) { try { cameraTrack.stop(); } catch(e) { logMonitorError('stop cameraTrack', e); } cameraTrack = null; }
   closeHiddenTrackReader();
   imageCapture = null;
   if (videoElement) {
-    try { videoElement.pause(); videoElement.srcObject = null; videoElement.load(); } catch (e) {}
+    try { videoElement.pause(); videoElement.srcObject = null; videoElement.load(); } catch (e) { logMonitorError('reset video element', e); }
   }
   cameraStatus = 'inactive';
 }
@@ -172,17 +252,23 @@ async function resumeSession() {
 
 function calculateFatigueScore(sessionMinutes, currentBlinkRate, now) {
   function sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
+  const scoreInputsReliable =
+    currentState === 'ATTENTIVE' &&
+    trackingQuality === 'good' &&
+    !freezeHiddenMetrics;
+
   const normalizedPerclos = perclosValue / 25;
   const perclosWeight = sigmoid((normalizedPerclos - 0.5) * 6) * 25;
 
-  const referenceRate = lowBlinkRate;
+  const referenceRate = Math.max(1, lowBlinkRate);
   const relativeDeficit = Math.max(0, (referenceRate - currentBlinkRate) / referenceRate);
   const blinkDeficit = relativeDeficit * 30;
 
   const stdDev = calculateStdDev(blinkIntervals);
   const variabilityPenalty = Math.min(stdDev / 2000, 1) * 15;
 
-  const acuteClosureWeight = Math.min(longClosureEvents * 5, 15);
+  recentLongClosures = recentLongClosures.filter((t) => now - t <= LONG_CLOSURE_WINDOW_MS);
+  const acuteClosureWeight = Math.min(recentLongClosures.length * 5, 15);
   
   const durationFactor = 1 - Math.exp(-sessionMinutes / 60);
   const durationPenalty = durationFactor * 20;
@@ -191,13 +277,15 @@ function calculateFatigueScore(sessionMinutes, currentBlinkRate, now) {
 
   let rawFatigueScore = Math.min(100, Math.max(0, perclosWeight + blinkDeficit + variabilityPenalty + acuteClosureWeight + durationPenalty + burstPenalty));
 
-  let confidence = 1;
-  if (currentState === 'LOOKING_DOWN') confidence = 0.3;
-  if (currentState === 'FACE_LOST') confidence = 0;
-  rawFatigueScore *= confidence;
-
   const adaptationRate = 0.05;
   if (now - lastFatigueSmoothAt >= 1000) {
+    if (!scoreInputsReliable) {
+      // Hold score during unreliable tracking so hidden/popup interaction does not create artificial growth.
+      smoothedFatigueScore *= 0.995;
+      lastFatigueSmoothAt = now;
+      return Math.round(smoothedFatigueScore);
+    }
+
     smoothedFatigueScore += (rawFatigueScore - smoothedFatigueScore) * adaptationRate;
     
     if (perclosValue < 5 && currentBlinkRate >= referenceRate && longClosureEvents === 0) {
@@ -243,12 +331,17 @@ function buildSessionData() {
     pauseStartAt,
     faceDetected,
     cameraStatus,
+    trackingQuality,
     eyesOpen: !eyesClosed,
     perclos: Math.round(perclosValue * 10) / 10,
   };
 }
 
 function updatePERCLOS(now) {
+  if (eyesClosed && lastClosedSampleAt > 0 && (now - lastClosedSampleAt > 600)) {
+    resetClosureTracking();
+  }
+
   const windowStart = now - PERCLOS_WINDOW_MS;
   eyeClosureHistory = eyeClosureHistory.filter(event => event.end > windowStart);
   
@@ -291,7 +384,7 @@ function closeHiddenTrackReader() {
   try {
     reader.releaseLock?.();
     reader.cancel?.().catch(() => undefined);
-  } catch (e) {}
+  } catch (e) { logMonitorError('closeHiddenTrackReader', e); }
 }
 
 function ensureHiddenCaptureProviders() {
@@ -379,7 +472,7 @@ async function runHiddenFrameLoop() {
           processingCtx.drawImage(videoElement, 0, 0, processingCanvas.width, processingCanvas.height);
           onFaceLandmarkerResults(faceLandmarker.detectForVideo(processingCanvas, performance.now()));
           detected = true;
-        } catch (e) {}
+        } catch (e) { logMonitorError('hidden fallback draw', e); }
       }
 
       if (!detected) {
@@ -462,6 +555,13 @@ function resetSessionCounters() {
   lastResultAt = 0;
   blinkIntervals = [];
   recentClosures = [];
+  recentLongClosures = [];
+  lastDrowsyEventAt = 0;
+  trackingQuality = 'good';
+  lowQualityStartAt = 0;
+  lastClosedSampleAt = 0;
+  freezeHiddenMetrics = false;
+  hiddenStableStartAt = 0;
   resetClosureTracking();
 }
 
@@ -470,6 +570,7 @@ function resetClosureTracking() {
   eyeClosedStart = 0;
   closureSampleCount = 0;
   drowsinessCounted = false;
+  lastClosedSampleAt = 0;
   openStateStartAt = 0;
   unknownStateStartAt = 0;
 }
@@ -525,14 +626,22 @@ function onFaceLandmarkerResults(results) {
   const eyeBlinkRight = getBlendshapeScore(blendshapes, 'eyeBlinkRight');
   const pitch = calculateHeadPitch(landmarks);
 
+  // Immediate guard: downward gaze can look like partial eye-closure and inflate PERCLOS.
+  if (pitch > LOOKING_DOWN_PITCH_DEG) {
+    trackingQuality = 'limited';
+    resetClosureTracking();
+    return;
+  }
+
   if (pitch > 30 || pitch < -20 || !Number.isFinite(pitch)) {
+    trackingQuality = 'poor';
     return;
   }
 
   let nextState = 'ATTENTIVE';
   if (!faceDetected) {
     nextState = 'FACE_LOST';
-  } else if (pitch > 25) {
+  } else if (pitch > LOOKING_DOWN_PITCH_DEG) {
     nextState = 'LOOKING_DOWN';
   }
 
@@ -549,18 +658,60 @@ function onFaceLandmarkerResults(results) {
   }
 
   if (currentState !== 'ATTENTIVE') {
+    trackingQuality = 'limited';
     resetClosureTracking();
-    eyeClosureHistory = [];
-    perclosValue = 0;
     handleUnknownTrackingFrame(now);
     return;
   }
 
   unknownStateStartAt = 0;
+  const frameQuality = evaluateFrameQuality({
+    frameGap,
+    isBackground,
+    pitch,
+    eyeBlinkLeft,
+    eyeBlinkRight,
+    landmarks,
+  });
+
+  if (!frameQuality.ok) {
+    trackingQuality = 'poor';
+    if (isBackground) {
+      freezeHiddenMetrics = true;
+      hiddenStableStartAt = 0;
+      resetClosureTracking();
+      return;
+    }
+    // Avoid dropping valid foreground closures on single noisy frames.
+    if (lowQualityStartAt === 0) lowQualityStartAt = now;
+    if (now - lowQualityStartAt >= 1200) {
+      resetClosureTracking();
+    }
+    return;
+  }
+
+  if (isBackground && freezeHiddenMetrics) {
+    if (hiddenStableStartAt === 0) hiddenStableStartAt = now;
+    if (now - hiddenStableStartAt < HIDDEN_QUALITY_RESUME_STABLE_MS) {
+      trackingQuality = 'limited';
+      return;
+    }
+    freezeHiddenMetrics = false;
+    hiddenStableStartAt = 0;
+  }
+
+  if (!isBackground) {
+    freezeHiddenMetrics = false;
+    hiddenStableStartAt = 0;
+  }
+
+  trackingQuality = 'good';
+  lowQualityStartAt = 0;
 
   const eyesCurrentlyClosed = areEyesClosed(eyeBlinkLeft, eyeBlinkRight);
 
   if (eyesCurrentlyClosed) {
+    lastClosedSampleAt = now;
     openStateStartAt = 0;
     if (!eyesClosed) {
       eyesClosed = true;
@@ -570,42 +721,31 @@ function onFaceLandmarkerResults(results) {
       closureSampleCount += 1;
     }
   } else if (!eyesCurrentlyClosed && eyesClosed) {
+    lastClosedSampleAt = 0;
     if (openStateStartAt === 0) openStateStartAt = now;
     const stableEnough = (now - openStateStartAt >= REOPEN_STABILITY_MS) || isBackground;
     
     if (stableEnough) {
       const closedDuration = openStateStartAt - eyeClosedStart;
 
-      if (closedDuration >= 200 && (closureSampleCount >= 3 || isBackground)) {
+      if (closedDuration >= 200 && closureSampleCount >= (isBackground ? BACKGROUND_MIN_CLOSED_SAMPLES : 3)) {
         eyeClosureHistory.push({ start: eyeClosedStart, end: openStateStartAt });
         recentClosures.push(now);
         recentClosures = recentClosures.filter(t => now - t < 10000);
       }
-      
-      const sparseBackgroundClosure = isBackground && 
-        closedDuration >= DROWSINESS_THRESHOLD_MS && 
-        closureSampleCount <= 2 && 
-        frameGap >= BACKGROUND_SPARSE_GAP_MS;
 
-      if (sparseBackgroundClosure) {
-        if (now - lastBlinkTime >= BLINK_REFRACTORY_MS) {
-          if (lastBlinkTime > 0) {
-            const interval = now - lastBlinkTime;
-            blinkIntervals.push(interval);
-            if (blinkIntervals.length > 20) blinkIntervals.shift();
-          }
-          blinkCount += 1;
-          blinkHistory.push(now);
-          lastBlinkTime = now;
-        }
-      } else if (closedDuration >= DROWSINESS_THRESHOLD_MS) {
-        if (!drowsinessCounted) {
+      if (closedDuration >= DROWSINESS_THRESHOLD_MS) {
+        const drowsySampleRequirementMet = !isBackground || closureSampleCount >= BACKGROUND_MIN_CLOSED_SAMPLES;
+        const drowsyCooldownElapsed = now - lastDrowsyEventAt >= DROWSY_EVENT_COOLDOWN_MS;
+        if (!drowsinessCounted && drowsySampleRequirementMet && drowsyCooldownElapsed) {
           longClosureEvents += 1;
+          recentLongClosures.push(now);
           drowsinessCounted = true;
+          lastDrowsyEventAt = now;
         }
       } else if (closedDuration >= BLINK_MIN_MS && closedDuration < DROWSINESS_THRESHOLD_MS) {
         if (now - lastBlinkTime >= BLINK_REFRACTORY_MS) {
-          if (!isBackground || closureSampleCount >= 1) {
+          if (!isBackground || closureSampleCount >= BACKGROUND_MIN_CLOSED_SAMPLES) {
             if (lastBlinkTime > 0) {
               const interval = now - lastBlinkTime;
               blinkIntervals.push(interval);
@@ -638,11 +778,11 @@ function stopSession() {
   stopCamera();
 
   if (faceLandmarker) {
-    try { faceLandmarker.close(); } catch (e) {}
+    try { faceLandmarker.close(); } catch (e) { logMonitorError('faceLandmarker close', e); }
     faceLandmarker = null;
   }
 
-  try { chrome.runtime.sendMessage({ action: 'monitorStopped', data: buildSessionData() }).catch(() => undefined); } catch (e) {}
+  try { chrome.runtime.sendMessage({ action: 'monitorStopped', data: buildSessionData() }).catch(() => undefined); } catch (e) { logMonitorError('send monitorStopped', e); }
 }
 
 chrome.runtime.onMessage.addListener((message) => {
@@ -657,19 +797,31 @@ try {
   const port = chrome.runtime.connect({ name: 'monitor-connection' });
   port.onDisconnect.addListener(() => {
     stopSession();
-    setTimeout(() => window.close(), 100);
+    if (!monitorClosing) {
+      monitorClosing = true;
+      setTimeout(() => window.close(), 100);
+    }
   });
-} catch (e) {}
+} catch (e) { logMonitorError('runtime connect', e); }
 
-setInterval(() => {
+shutdownIntervalId = setInterval(() => {
   try {
     if (!chrome.runtime?.id || !chrome.runtime.getManifest()) {
       stopSession();
-      window.close();
+      if (!monitorClosing) {
+        monitorClosing = true;
+        clearInterval(shutdownIntervalId);
+        window.close();
+      }
     }
   } catch (e) {
     stopSession();
-    window.close();
+    logMonitorError('shutdown healthcheck', e);
+    if (!monitorClosing) {
+      monitorClosing = true;
+      clearInterval(shutdownIntervalId);
+      window.close();
+    }
   }
 }, 1000);
 

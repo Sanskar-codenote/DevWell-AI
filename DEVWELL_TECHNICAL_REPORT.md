@@ -40,9 +40,10 @@ Camera Stream -> Face Landmarker (WASM)
 | Blink minimum duration | >= 35ms | Minimum closure duration for blink classification |
 | Blink refractory period | 80ms | Prevent duplicate rapid recounting |
 | Drowsiness threshold | >= 1500ms | Long eye closure event |
+| Long-closure scoring window | 60s | Rolling window for acute-closure fatigue weight |
 | PERCLOS window | 60s | Rolling window for eye-closure percentage |
 | Head pitch valid range | -20deg to +30deg | Reject unstable pose frames |
-| Looking-down transition threshold | > 25deg (with hysteresis) | Attention-state transition |
+| Looking-down transition threshold | > 18deg (with hysteresis) | Attention-state transition |
 | Attention hysteresis | 800ms | Stabilize state transitions |
 | Auto-pause (visible) | 20s no face | Pause active scoring when absent |
 | Auto-pause (hidden/minimized) | 90s no face | More tolerant in throttled states |
@@ -74,7 +75,7 @@ States:
 Rules:
 
 - Pose transitions are hysteresis-stabilized (800ms)
-- When state is not `ATTENTIVE`, closure/PERCLOS tracking is reset to avoid polluted signals
+- When state is not `ATTENTIVE`, active closure tracking is reset; historical PERCLOS window is preserved for smooth decay
 - Fatigue confidence scaling:
   - `ATTENTIVE`: 1.0
   - `LOOKING_DOWN`: 0.3
@@ -93,7 +94,7 @@ Components:
 | PERCLOS (sigmoid) | 25 | `sigmoid(((perclos/25) - 0.5) * 6) * 25` |
 | Blink deficit | 30 | `max(0, (referenceRate - currentBlinkRate)/referenceRate) * 30` |
 | Blink variability | 15 | `min(stdDev(blinkIntervals)/2000, 1) * 15` |
-| Acute closures | 15 | `min(longClosureEvents * 5, 15)` |
+| Acute closures | 15 | `min(recentLongClosures(last 60s) * 5, 15)` |
 | Duration accumulation | 20 | `(1 - exp(-sessionMinutes/60)) * 20` |
 | Micro-burst penalty | 10 | `min(recentClosures(last 10s) * 3, 10)` |
 
@@ -103,6 +104,7 @@ Post-processing:
 2. Confidence gating applied by attention state
 3. Smoothed with EMA-like adaptation:
    - `smoothed += (raw - smoothed) * 0.05` (max once per second)
+   - During unreliable input windows (`!ATTENTIVE`, poor quality, or hidden freeze), score growth is blocked and only slight recovery decay is allowed (`smoothed *= 0.995`)
 4. Recovery dampening:
    - If `perclos < 5`, `currentBlinkRate >= referenceRate`, and `longClosureEvents == 0`, then `smoothed *= 0.97`
 5. Final score:
@@ -143,6 +145,36 @@ This is designed to preserve blink tracking across:
 - hidden tabs
 - minimized windows
 - overlapped windows (occluded by other apps)
+
+Additional hardening now active in extension monitor:
+
+- Frame quality gate (pose, asymmetry, face area, cadence) blocks polluted updates
+- Hidden/overlap freeze gate:
+  - immediately freezes blink/PERCLOS/drowsy accumulation on hidden low-quality frames
+  - resumes only after `~1.8s` of stable hidden quality
+- Background counting constraints:
+  - background blink/closure classification requires minimum closed-sample counts
+  - long-closure event cooldown (`10s`) prevents burst overcounting
+- Stale-closure breaker:
+  - if no fresh closed-eye evidence for `~600ms`, active closure state is force-cleared to prevent one-way PERCLOS drift
+
+## 13. Extension Reliability Hardening (May 2026)
+
+This session introduced targeted extension reliability updates:
+
+1. Added explicit tracking-quality propagation (`good`, `limited`, `poor`) through monitor -> background/session state -> popup/dashboard UI.
+2. Added visible tracking-quality badges in extension popup and website dashboard.
+3. Reworked hidden/minimized behavior to avoid false spikes:
+   - removed sparse-frame long-closure-to-blink conversion
+   - added stricter hidden classification constraints
+   - added hidden quality freeze/resume window
+4. Fixed fatigue-score drift behavior:
+   - acute closure component now uses rolling 60-second window
+   - unreliable tracking windows no longer increase fatigue score
+5. Improved monitor operational safety:
+   - reduced silent exception swallowing with scoped monitor warnings
+   - safe shutdown guard to prevent repeated close-loop churn
+6. Normalized looking-down state thresholds so attention-state logic and gating are consistent.
 
 ## 8. Session Controls and Time Accounting
 
