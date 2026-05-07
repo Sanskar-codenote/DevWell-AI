@@ -22,6 +22,13 @@ DevWell is a **privacy-first developer wellness platform** that monitors eye bli
 - **Guest Mode**: Full local-only monitoring without requiring an account.
 - **Dashboard & Analytics**: Track your weekly/monthly trends and session history via the web platform.
 
+### Fatigue Score (Current Runtime)
+- Score range: `0-100`, updated continuously during active sessions.
+- Core components: PERCLOS sigmoid weight, blink deficit vs user goal, blink variability, long closures, duration accumulation, and micro-burst penalties.
+- Confidence gating by attention state: `ATTENTIVE=1.0`, `LOOKING_DOWN=0.3`, `FACE_LOST=0.0`.
+- Temporal smoothing: EMA-style adaptation (`0.05`) with recovery damping when alert conditions are sustained.
+- Blink closure detection is adaptive (not a single fixed threshold): both-eye moderate closure or asymmetric strong+weak closure.
+
 ---
 
 ## 🛠️ Architecture Overview

@@ -1,292 +1,326 @@
 # DevWell Technical Reference
 
-This document provides a deep dive into the technical architecture, deployment strategies, and API specifications for the DevWell platform.
+This document describes the current technical architecture, runtime behavior, deployment model, and API contracts for DevWell.
 
-## 🏗️ Technical Details
+## 1. System Overview
 
-### The Role of AI in DevWell
-DevWell leverages edge-based Artificial Intelligence to provide highly accurate, real-time physiological tracking without compromising user privacy. The system does not use server-side processing for computer vision; everything runs locally in the user's browser.
+DevWell is a privacy-first fatigue monitoring platform with three core parts:
 
-1.  **Core AI Engine (MediaPipe Face Landmarker):**
-    We utilize Google's MediaPipe Face Landmarker task running via WebAssembly (WASM). This is a lightweight, highly optimized deep learning model trained to detect 478 3D facial landmarks in real-time (often running at 15-30+ FPS directly in the browser).
-2.  **Blendshapes (Expression Analysis):**
-    Instead of manually calculating pixel distances between eyelids (which is highly susceptible to camera angle and distance), the AI engine generates "Blendshapes". Blendshapes are normalized scores (0.0 to 1.0) representing 52 distinct facial expressions. We specifically extract the AI's confidence scores for `eyeBlinkLeft` and `eyeBlinkRight` to determine exact closure states, making the detection robust against perspective distortion.
-3.  **Algorithmic Synthesis:**
-    The outputs from the AI model (the 3D landmark coordinates and the Blendshape classifications) act as the raw sensory input for DevWell's deterministic scoring engine. We use the 3D coordinates to calculate true physical head pitch (preventing false readings when looking at a keyboard), and the Blendshapes to calculate PERCLOS (Percentage of Eye Closure) and micro-bursts over time.
+1. Frontend Web App (`frontend/`): React + TypeScript dashboard, analytics, and settings.
+2. Browser Extension (`chrome-extension/`): real-time camera monitoring and cross-tab/browser runtime logic.
+3. Backend API (`backend/`): Express + PostgreSQL for auth and session analytics.
 
-### Detection Pipeline
+All face/blink processing is local in-browser via MediaPipe. No camera frames are uploaded.
 
+## 2. AI and Detection Stack
+
+### 2.1 MediaPipe Runtime
+
+- Model: MediaPipe Face Landmarker (WASM)
+- Inputs: camera frames
+- Outputs used by DevWell:
+  - 3D face landmarks (for head pitch validation)
+  - Blendshape scores `eyeBlinkLeft`, `eyeBlinkRight` (for eye closure and blink logic)
+
+### 2.2 Detection Pipeline
+
+```text
+Camera Stream -> Face Landmarker (WASM)
+                 -> Blendshapes + Landmarks
+                 -> Eye Closure / Blink Events
+                 -> PERCLOS + Burst + Variability Signals
+                 -> Fatigue Score (0-100)
+                 -> Alerts + Session Metrics
 ```
-Camera Stream → MediaPipe Face Mesh → Blendshapes & Landmarks
-                        ↓
-          ┌─────────────┴─────────────┐
-          ↓                           ↓
-    Blink Detection            PERCLOS Tracking
-    (Blendshape Score > 0.5)   (60s rolling window)
-          ↓                           ↓
-    Drowsiness Event           Fatigue Score Calculation
-    (≥1500ms / Microsleep)     (Multi-factor Weighted Sum)
-                        ↓
-          Classification + Notifications
-```
 
-| Parameter | Default Value | Description |
-|-----------|---------------|-------------|
-| Eye Closure Threshold | > 0.4 (both eyes) | Blendshape threshold for "eyes closed" |
-| Drowsiness Threshold | ≥1500ms | Long-eye-closure event (Microsleep) |
-| PERCLOS Window | 60 seconds | Rolling window for closure percentage |
-| High Fatigue (PERCLOS) | 25% | Revised threshold for high fatigue contribution |
-| Refractory Period | 80ms | Prevents duplicate detections |
-| Head Pitch Limit | -20° to +30° | Valid attention range before state reset |
+## 3. Runtime Parameters (Current)
 
-### Database Schema (PostgreSQL)
+| Parameter | Value | Purpose |
+|---|---:|---|
+| Blink minimum duration | >= 35ms | Minimum closure duration for blink classification |
+| Blink refractory period | 80ms | Prevent duplicate rapid recounting |
+| Drowsiness threshold | >= 1500ms | Long eye closure event |
+| PERCLOS window | 60s | Rolling window for eye-closure percentage |
+| Head pitch valid range | -20deg to +30deg | Reject unstable pose frames |
+| Looking-down transition threshold | > 25deg (with hysteresis) | Attention-state transition |
+| Attention hysteresis | 800ms | Stabilize state transitions |
+| Auto-pause (visible) | 20s no face | Pause active scoring when absent |
+| Auto-pause (hidden/minimized) | 90s no face | More tolerant in throttled states |
 
-| Table | Purpose | Key Fields |
-|-------|---------|------------|
-| `users` | User accounts | id, email, password_hash |
-| `sessions` | Monitoring sessions | user_id, session_date, duration_minutes |
-| `sessions` | Session metrics | avg_blink_rate, fatigue_score, long_closure_events |
+## 4. Eye Closure and Blink Classification
 
----
+DevWell uses adaptive blendshape gates (not a single fixed threshold):
 
-## 👥 User Types & Features
+Eyes are treated as closed if any rule matches:
 
-DevWell provides two modes of operation to balance privacy and convenience:
+- both eyes > 0.35
+- left > 0.55 and right > 0.2
+- right > 0.55 and left > 0.2
 
-### 👤 Registered User
-**Best for:** Developers who want long-term progress tracking and cross-tab synchronization.
-- **Persistent Analytics**: All session metrics are securely stored in the PostgreSQL database for weekly/monthly trend analysis.
-- **Cross-Tab Synchronization**: Start a session in one tab, see live metrics and control it from any other DevWell tab or the extension popup.
-- **Bidirectional Settings Sync**: Change your "Low Blink Rate Threshold" or notification preferences in the extension popup and they instantly sync to the web dashboard (and vice versa).
-- **Advanced Controls**: Manual "Pause / Take Break" functionality with hardware camera release.
+Additional blink classification rules:
 
-### 👤 Guest User (Local-only)
-**Best for:** Quick setup or users who prefer 100% local data storage.
-- **Full Privacy**: No account required. All monitoring happens entirely within your browser.
-- **Local Analytics**: View your recent session history via the specialized "Guest Analytics" view (stored in `chrome.storage.local`).
-- **Real-time Monitoring**: Access to the full fatigue engine, including blink detection and 20-20-20 break reminders.
-- **Data Boundary**: Data is limited to the current browser profile and is not synced across devices or browsers.
+- Valid blink closure must be >= 35ms and < 1500ms
+- Long closure (>= 1500ms) contributes to drowsiness/acute closure signals
+- Refractory filtering (80ms) prevents duplicate blink registration
 
----
+## 5. Attention-State Gating
 
-## 🧠 Session Management & Fatigue Logic
+States:
 
-### Fatigue Scoring Algorithm (0-100)
-The fatigue score is a multi-factor weighted sum designed to provide a scientifically grounded assessment of developer alertness, dynamically adapting to each user.
+- `ATTENTIVE`
+- `LOOKING_DOWN`
+- `FACE_LOST`
+
+Rules:
+
+- Pose transitions are hysteresis-stabilized (800ms)
+- When state is not `ATTENTIVE`, closure/PERCLOS tracking is reset to avoid polluted signals
+- Fatigue confidence scaling:
+  - `ATTENTIVE`: 1.0
+  - `LOOKING_DOWN`: 0.3
+  - `FACE_LOST`: 0.0
+
+## 6. Fatigue Scoring Algorithm (0-100)
+
+### 6.1 Live Runtime Score (`emitState` path)
+
+Live score is a weighted, clamped, confidence-gated, and smoothed signal.
+
+Components:
 
 | Factor | Max Weight | Logic |
-|--------|------------|-------|
-| **PERCLOS (Sigmoid)** | 25 pts | Primary driver. Normalized against a 25% window and scaled using a Sigmoid curve for a natural progression. |
-| **Absolute Blink Deficit**| 30 pts | Penalty calculated directly against the user's **configured goal blink rate**, enforcing active blink training. |
-| **Blink Variability** | 15 pts | Penalty based on the Standard Deviation of recent blink intervals, detecting erratic blinking patterns. |
-| **Acute Closures** | 15 pts | Penalty for discrete long-closure events (microsleeps). |
-| **Duration (Exp)** | 20 pts | Exponential fatigue accumulation based on session active time. |
-| **Micro-Bursts** | 10 pts | Penalty for rapid, successive bursts of closures within a 10-second window. |
+|---|---:|---|
+| PERCLOS (sigmoid) | 25 | `sigmoid(((perclos/25) - 0.5) * 6) * 25` |
+| Blink deficit | 30 | `max(0, (referenceRate - currentBlinkRate)/referenceRate) * 30` |
+| Blink variability | 15 | `min(stdDev(blinkIntervals)/2000, 1) * 15` |
+| Acute closures | 15 | `min(longClosureEvents * 5, 15)` |
+| Duration accumulation | 20 | `(1 - exp(-sessionMinutes/60)) * 20` |
+| Micro-burst penalty | 10 | `min(recentClosures(last 10s) * 3, 10)` |
 
-*Note: The total score is capped at 100 and smoothed via a Momentum-Based Physiological Model (with active recovery when alert).*
+Post-processing:
 
-### Robustness & False Positive Mitigation
+1. Raw score is clamped to `0..100`
+2. Confidence gating applied by attention state
+3. Smoothed with EMA-like adaptation:
+   - `smoothed += (raw - smoothed) * 0.05` (max once per second)
+4. Recovery dampening:
+   - If `perclos < 5`, `currentBlinkRate >= referenceRate`, and `longClosureEvents == 0`, then `smoothed *= 0.97`
+5. Final score:
+   - `fatigueScore = round(smoothed)`
 
-The DevWell engine utilizes a combination of 3D physical geometry and AI expression analysis to provide accurate fatigue tracking while rejecting noise.
+Level thresholds:
 
-#### 1. Head Pitch (Up/Down Detection)
-*   **What we check:** The vertical tilt of the head (pitch) to determine if the user is looking at their screen, tucked down (e.g., looking at a keyboard), or tilted too far back.
-*   **How we check it:**
-    *   We use three anchor landmarks: **Chin** (152), **Forehead** (10), and the **Nose**.
-    *   Treating the face as a 3D vector, we calculate the difference in height (Y-axis) and depth (Z-axis) between the forehead and the chin.
-    *   Using `Math.atan2(deltaZ, deltaY)`, we extract the true angle of the face relative to the camera in degrees.
-    *   **Rules:** If the angle is **> 25°**, the state becomes `LOOKING_DOWN`. If the angle is extreme (**> 30° or < -20°**), the frame is rejected entirely as "unstable."
+- `> 70`: High Fatigue
+- `> 40`: Moderate Fatigue
+- else: Fresh
 
-#### 2. Eye Closure (Blendshape Detection)
-*   **What we check:** We use "Blendshapes" (high-level AI classifications of facial expressions) rather than measuring raw distances between eyelids, making it highly resistant to perspective distortion.
-*   **How we check it:**
-    *   We evaluate the `eyeBlinkLeft` and `eyeBlinkRight` categories from the Face Landmarker, which range from **0.0** (fully open) to **1.0** (fully closed).
-    *   **Rules:** We require **both** eyes to have a score **> 0.4** to count as "Closed." This prevents winking or natural asymmetrical squinting from being miscounted.
-    *   **Noise Filtering:** A closure is only recorded for PERCLOS calculation if it lasts at least **200ms** and is captured across at least **3 consecutive frames**.
+### 6.2 Final Session Summary Score (`stop()` path)
 
-#### 3. Attention State Machine (Hysteresis & Gating)
-*   **What we check:** We determine if the incoming data stream is clean enough to be used for accurate tracking.
-*   **How we check it:**
-    *   **Hysteresis (800ms):** If a user looks down briefly, the system remains in `ATTENTIVE`. The pose must be held for a full **800ms** before officially switching to `LOOKING_DOWN` or `FACE_LOST`.
-    *   **Hard Data Gating:** The moment the state leaves `ATTENTIVE`, a hard reset is triggered. The current rolling window of eye closures is wiped, and PERCLOS is zeroed out. This ensures that partially closed eyes detected while looking down at a phone do not artificially inflate the fatigue score.
+When a session stops, returned summary uses a separate simplified formula:
 
-#### 4. PERCLOS (Drowsiness Metric)
-*   **What we check:** The "Percentage of Eye Closure" over a rolling 60-second window.
-*   **How we check it:**
-    *   The `start` and `end` timestamps of every valid blink/closure are recorded.
-    *   We sum the total milliseconds the eyes were closed in the last 60 seconds and divide by 60,000ms.
-    *   **Rules:** If the eyes are closed for **25%** of a minute, the PERCLOS contribution reaches its configured maximum (25 pts), signaling high drowsiness.
+| Factor | Logic |
+|---|---|
+| Blink deficit | `0` if session `< 1 min`; else `max(0, (lowBlinkRate - currentBlinkRate)/lowBlinkRate) * 30` |
+| PERCLOS weight | `(perclos / 25) * 40` |
+| Acute closures | `min(longClosureEvents * 5, 20)` |
+| Closure penalty | `min(perclosWeight + acuteClosureWeight, 80)` |
+| Duration penalty | `min(max(sessionMinutes - 3, 0) / 120 * 20, 20)` |
+| Final score | `clamp(blinkDeficit + closurePenalty + durationPenalty, 0, 100)`, then rounded |
 
-### Browser Compatibility and Background Processing
-- Primary supported platforms are Chromium-based browsers (Chrome/Edge/Brave) and Firefox via the dedicated extension build.
-- Hidden-tab tracking uses a progressive strategy: `MediaStreamTrackProcessor` when available, then `ImageCapture`, then video frame draw fallback.
-- Safari/iOS are currently out of scope for extension parity because required background capture APIs and extension runtime behavior differ substantially.
+Level thresholds are the same (`>70`, `>40`).
 
-### Pause, Break, and Auto-Pause
-DevWell incorporates robust session management to ensure fatigue scores are not artificially inflated during breaks or interruptions.
+## 7. Background, Minimized, and Overlapped Runtime
 
-1.  **Manual Pause & Breaks:** The user can manually pause the session or start a break. This action immediately stops the camera stream and releases the hardware lock (turning off the webcam light) to ensure privacy and save power. The session timer and fatigue calculations are suspended.
-2.  **Auto-Pause (Face Absence):** If no face is detected for 20 continuous seconds, the system triggers an `auto-pause`. The camera remains active (to detect when the user returns) but the fatigue score calculations and session timer are suspended to prevent false penalties.
-3.  **Auto-Resume:** When the system is in an `auto-paused` state, the detection of a face automatically resumes the session timer and tracking. Manual pauses require manual resumes to prevent accidental re-engagement.
-4.  **Timer Accuracy:** The `FatigueEngine` strictly accounts for `totalPausedTime`. The session duration used for calculating "Blinks Per Minute" and "Duration Penalty" is purely the active time, ensuring complete accuracy even if the session is left paused for hours.
+Current runtime uses a watchdog-backed continuous capture loop with provider fallback:
 
-### Configurable Thresholds
-- **Dynamic Baselines:** The system allows the user to customize the "Low Blink Rate Threshold" (default: 15 BPM). The fatigue calculation dynamically scales penalties based on this user-defined target rather than a generic hardcoded value.
+1. `MediaStreamTrackProcessor` reader (preferred)
+2. `ImageCapture.grabFrame()` fallback
+3. video/canvas frame draw fallback
 
----
+This is designed to preserve blink tracking across:
 
-## 🐳 Docker Deployment Details
+- active foreground tabs
+- hidden tabs
+- minimized windows
+- overlapped windows (occluded by other apps)
 
-### Environment Configuration
+## 8. Session Controls and Time Accounting
 
-Create `.env` from `.env.docker.example`:
+- Manual pause: camera stops, wake lock released, active-time accumulation paused
+- Auto-pause:
+  - visible: 20s no face
+  - hidden/minimized: 90s no face
+- Auto-resume: resumes on detected face when paused automatically
+- Session duration metrics subtract total paused time
 
-```env
-# Ports
-FRONTEND_PORT=80
-BACKEND_PORT=3001
+## 9. Data Model (PostgreSQL)
 
-# Security (REQUIRED)
-JWT_SECRET=openssl_rand_-base64_64_generated_value
+### 9.1 `users`
 
-# Database (REQUIRED)
-DB_USER=devwell
-DB_PASSWORD=your_strong_password
-DB_HOST=db
-DB_NAME=devwell_production
-DB_PORT=5432
-DB_POOL_MAX=20
+- `id` (PK)
+- `email` (unique)
+- `encrypted_password`
+- `created_at`
+- `updated_at`
 
-# CORS (REQUIRED in production)
-CORS_ALLOWED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com
+### 9.2 `sessions`
 
-# Chrome Extension (REQUIRED in production)
-EXTENSION_ID=your_published_extension_id
+- `id` (PK)
+- `user_id` (FK -> users.id)
+- `session_date` (DATE)
+- `duration_minutes` (REAL)
+- `avg_blink_rate` (REAL)
+- `fatigue_score` (REAL)
+- `long_closure_events` (INTEGER)
+- `created_at`
+- `updated_at`
 
-# Logging
-LOG_LEVEL=info
-```
+### 9.3 `otp_codes`
 
-### Production Checklist
+- `id` (PK)
+- `email`
+- `code`
+- `purpose`
+- `expires_at`
+- `used`
+- `created_at`
 
-- [ ] Strong `JWT_SECRET` generated (`openssl rand -base64 64`)
-- [ ] Strong `DB_PASSWORD` set
-- [ ] `CORS_ALLOWED_ORIGINS` configured for production domains
-- [ ] `EXTENSION_ID` set to published Chrome extension ID
-- [ ] TLS/HTTPS configured via reverse proxy
-- [ ] Database backup cron job configured
-- [ ] `LOG_LEVEL` set appropriately (`info` for production, `debug` for staging)
-- [ ] MediaPipe assets present in `frontend/public/mediapipe/` and `chrome-extension/lib/`
+## 10. Backend Security and Production Controls
 
-### Docker Stack Features
+Implemented:
 
-| Service | Image | Features |
-|---------|-------|----------|
-| **Frontend** | Nginx | Gzip, security headers, static asset caching |
-| **Backend** | Node.js | Non-root user, signal handling, rate limiting |
-| **Database** | PostgreSQL 16 Alpine | Health checks, persistent volume |
+- Helmet security headers
+- CORS allowlist + extension-origin filtering
+- Auth and OTP rate limiting
+- JWT auth middleware
+- Structured logging with pino
+- Health endpoint (`/api/health`)
 
-**Security:**
-- Helmet headers
-- CORS enforcement
-- Rate limiting (100 req/15min API, 5 req/15min auth)
-- Structured JSON logging (pino)
+Production checks enforced:
 
-**Resource Limits:**
-- Frontend: 256M RAM, 0.5 CPU
-- Backend: 512M RAM, 1.0 CPU
-- Database: 512M RAM, 1.0 CPU
+- `JWT_SECRET` required, non-placeholder, min length 32
+- `DB_PASSWORD` required
+- `CORS_ALLOWED_ORIGINS` required
+- `EXTENSION_ID` required
 
-### Database Backups
+## 11. Browser Compatibility
 
-Automated backup script included at `scripts/backup-db.sh`:
+Supported:
 
-```bash
-# Manual backup
-./scripts/backup-db.sh
+- Chromium-based browsers (Chrome, Edge, Brave)
+- Firefox (dedicated extension build)
 
-# Automated daily backups (add to crontab)
-# crontab -e
-0 2 * * * cd /path/to/DevWell && ./scripts/backup-db.sh >> /var/log/devwell-backup.log 2>&1
-```
+Not targeted for extension parity:
 
-Backups are:
-- Gzipped
-- Saved to `./backups/`
-- Auto-cleaned after 30 days (configurable via `RETAIN_DAYS`)
+- Safari / iOS
 
-### TLS/HTTPS
+## 12. API Reference (Current)
 
-The Docker stack serves HTTP. For production HTTPS, use a reverse proxy:
+Base path: `/api/v1`
+
+### 12.1 Auth
+
+#### Register
 
 ```bash
-# Caddy (recommended - automatic HTTPS)
-caddy reverse-proxy --from yourdomain.com --to localhost:80
-
-# Or configure Traefik/Nginx with Let's Encrypt
-```
-
-### Common Docker Commands
-
-```bash
-# View logs
-docker compose logs -f              # All services
-docker compose logs -f backend     # Backend only (JSON logs)
-
-# Stop services
-docker compose down
-
-# Rebuild after code changes
-docker compose up -d --build
-
-# Full reset (WARNING: deletes database)
-docker compose down -v
-```
-
----
-
-## 📊 API Reference
-
-### Authentication
-
-```bash
-# Register
 curl -X POST http://localhost:3001/api/v1/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"email": "user@example.com", "password": "password"}'
+  -d '{"email":"user@example.com","password":"strongPass123","otp":"123456"}'
+```
 
-# Login
+#### Login
+
+```bash
 curl -X POST http://localhost:3001/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email": "user@example.com", "password": "password"}'
+  -d '{"email":"user@example.com","password":"strongPass123"}'
+```
 
-# Get current user
+#### Current User
+
+```bash
 curl -X GET http://localhost:3001/api/v1/auth/me \
   -H "Authorization: Bearer <token>"
 ```
 
-### Sessions
+### 12.2 Sessions
+
+#### Create Session
 
 ```bash
-# Create session
 curl -X POST http://localhost:3001/api/v1/sessions \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"duration_minutes": 60, "avg_blink_rate": 15, "fatigue_score": 0.2}'
+  -d '{
+    "session_date":"2026-05-07",
+    "duration_minutes":42.5,
+    "avg_blink_rate":14.2,
+    "fatigue_score":58,
+    "long_closure_events":1
+  }'
+```
 
-# List sessions
-curl -X GET http://localhost:3001/api/v1/sessions \
+#### List Sessions
+
+```bash
+curl -X GET "http://localhost:3001/api/v1/sessions?limit=20&offset=0" \
   -H "Authorization: Bearer <token>"
 ```
 
-### Analytics
+### 12.3 Analytics
+
+#### Weekly
 
 ```bash
-# Weekly trends
 curl -X GET http://localhost:3001/api/v1/analytics/weekly \
   -H "Authorization: Bearer <token>"
+```
 
-# Monthly trends
+#### Monthly
+
+```bash
 curl -X GET http://localhost:3001/api/v1/analytics/monthly \
   -H "Authorization: Bearer <token>"
 ```
+
+## 13. Docker and Operations
+
+### 13.1 Environment
+
+Use `.env.docker.example` as base and set all required values.
+
+Minimum production variables:
+
+- `JWT_SECRET`
+- `DB_USER`
+- `DB_PASSWORD`
+- `DB_NAME`
+- `DB_HOST`
+- `DB_PORT`
+- `CORS_ALLOWED_ORIGINS`
+- `EXTENSION_ID`
+
+### 13.2 Operational Checklist
+
+- Strong secrets configured
+- TLS/HTTPS via reverse proxy
+- Health checks passing
+- DB backups scheduled and restore-tested
+- Logs monitored and retention policy defined
+
+### 13.3 Useful Commands
+
+```bash
+docker compose logs -f
+docker compose logs -f backend
+docker compose up -d --build
+docker compose down
+docker compose down -v  # destroys DB volume
+```
+
+## 14. Privacy Guarantees
+
+- Face processing is local to the device
+- Camera frames are not sent to backend
+- Backend stores numeric summaries only
+- Guest mode can operate without account storage

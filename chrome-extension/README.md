@@ -1,6 +1,6 @@
-# DevWell Chrome Extension
+# DevWell Browser Extension
 
-A Manifest V3 Chrome extension that provides real-time developer wellness monitoring.
+A Manifest V3 browser extension that provides real-time developer wellness monitoring.
 
 ## Features
 - **Independent Monitoring**: Camera processing runs in a dedicated pinned tab, ensuring it continues even when you switch tabs.
@@ -25,10 +25,10 @@ A Manifest V3 Chrome extension that provides real-time developer wellness monito
     # Build for all supported browsers
     npm run build:all
     ```
-    This generates two output directories: `dist/` (for Chrome) and `dist-firefox/` (for Firefox).
+    This generates two output directories: `dist/` (for Chromium browsers) and `dist-firefox/` (for Firefox).
 
 3.  **Load into Browser**:
-    - **Chrome**:
+    - **Chrome / Edge / Brave**:
       - Open `chrome://extensions`.
       - Enable **Developer mode**.
       - Click **Load unpacked**.

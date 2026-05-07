@@ -7,7 +7,7 @@ The web application for DevWell AI, built with React, TypeScript, and Vite.
 - **Analytics**: Visualization of blink rates and fatigue trends.
 - **Settings**: Configuration of fatigue thresholds and notifications.
 - **Responsive Design**: Styled with Tailwind CSS for a seamless experience.
-- **Extension Sync**: Automatic state synchronization with the DevWell Chrome Extension.
+- **Extension Sync**: Automatic state synchronization with the DevWell browser extension.
 
 ## Quick Start
 
@@ -32,6 +32,7 @@ The web application for DevWell AI, built with React, TypeScript, and Vite.
 - **API Proxy**: In development, requests to `/api` are proxied to `http://localhost:3001` (configurable in `vite.config.ts`).
 - **MediaPipe Assets**: Local WASM and task files are stored in `public/mediapipe/` for reliable offline processing.
 - **Background/Minimized Tracking**: The frontend engine includes hidden-tab fallbacks (`MediaStreamTrackProcessor` -> `ImageCapture` -> `video` frame draw) to keep blink detection resilient when browser timers are throttled.
+- **Fatigue Score Runtime**: Multi-factor score (`PERCLOS + blink deficit + variability + long closures + duration + bursts`) with attention-state confidence gating and 1Hz smoothing.
 
 ## Documentation
 Refer to the main `README.md` in the project root for comprehensive architectural details.

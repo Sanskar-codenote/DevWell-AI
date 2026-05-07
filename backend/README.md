@@ -41,10 +41,11 @@ The backend service for DevWell AI, providing authentication, session management
 |----------|-------------|---------|
 | `PORT` | API server port | `3001` |
 | `JWT_SECRET` | Secret key for JWT signing | (Required) |
-| `EXTENSION_ID` | Authorized extension IDs (comma-separated) | Required in production |
 | `DB_USER` | PostgreSQL user | (Required) |
+| `DB_PASSWORD` | PostgreSQL password | Required in production |
 | `DB_NAME` | PostgreSQL database name | (Required) |
-| `EXTENSION_ID` | Authorized Chrome Extension ID | (Optional in dev) |
+| `DB_PORT` | PostgreSQL port | `5432` |
+| `EXTENSION_ID` | Authorized extension IDs (comma-separated) | Required in production, optional in development |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated list of allowed origins | (Localhost) |
 | `SMTP_HOST` | SMTP server hostname | (Optional) |
 | `SMTP_PORT` | SMTP server port | (Optional) |
@@ -68,6 +69,7 @@ Use `smtp.sendgrid.net:587` with `SMTP_USER=apikey` and your SendGrid API key as
 In production mode (`NODE_ENV=production`):
 - `EXTENSION_ID` is required.
 - `JWT_SECRET` must be at least 32 characters and must not use placeholder defaults.
+- `DB_PASSWORD` and `CORS_ALLOWED_ORIGINS` are required.
 - Extension origins are allowed only when their ID matches configured values.
 
 ## API Documentation
