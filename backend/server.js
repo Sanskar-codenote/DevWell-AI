@@ -19,8 +19,8 @@ const logger = pino({
 });
 
 // ─── Environment Validation ─────────────────────────────────────────────────
-const REQUIRED_ENV = ['JWT_SECRET', 'DB_USER', 'DB_NAME', 'DB_PORT'];
-const PRODUCTION_ENV = ['DB_PASSWORD', 'CORS_ALLOWED_ORIGINS', 'EXTENSION_ID'];
+const REQUIRED_ENV = ['JWT_SECRET'];
+const PRODUCTION_ENV = ['CORS_ALLOWED_ORIGINS'];
 
 function validateEnv() {
   const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
@@ -29,10 +29,24 @@ function validateEnv() {
     process.exit(1);
   }
 
+  // Database configuration: either DATABASE_URL or individual DB_* vars
+  const hasDatabaseUrl = process.env.DATABASE_URL;
+  const hasIndividualDbConfig = process.env.DB_USER && process.env.DB_NAME && process.env.DB_PORT;
+  if (!hasDatabaseUrl && !hasIndividualDbConfig) {
+    logger.fatal('Database configuration missing: provide either DATABASE_URL or DB_USER, DB_NAME, DB_PORT');
+    process.exit(1);
+  }
+
   if (process.env.NODE_ENV === 'production') {
     const missingProd = PRODUCTION_ENV.filter((key) => !process.env[key]);
     if (missingProd.length > 0) {
       logger.fatal({ missing: missingProd }, 'Missing required PRODUCTION environment variables');
+      process.exit(1);
+    }
+
+    // DB_PASSWORD required in production only if using individual DB config (not DATABASE_URL)
+    if (!hasDatabaseUrl && !process.env.DB_PASSWORD) {
+      logger.fatal('DB_PASSWORD is required in production when not using DATABASE_URL');
       process.exit(1);
     }
 

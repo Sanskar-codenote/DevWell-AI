@@ -10,11 +10,15 @@ const logger = pino({
 });
 
 const pool = new Pool({
-  user: process.env.DB_USER || 'dev16',
-  host: process.env.DB_HOST || '/var/run/postgresql',
-  database: process.env.DB_NAME || 'devwell_dev',
-  password: process.env.DB_PASSWORD || 'password',
-  port: parseInt(process.env.DB_PORT || '5432'),
+  connectionString: process.env.DATABASE_URL,
+  // Fall back to individual params if DATABASE_URL not set
+  ...(!process.env.DATABASE_URL && {
+    user: process.env.DB_USER || 'dev16',
+    host: process.env.DB_HOST || '/var/run/postgresql',
+    database: process.env.DB_NAME || 'devwell_dev',
+    password: process.env.DB_PASSWORD || 'password',
+    port: parseInt(process.env.DB_PORT || '5432'),
+  }),
   // Production pool tuning
   max: parseInt(process.env.DB_POOL_MAX || '20'),
   idleTimeoutMillis: parseInt(process.env.DB_POOL_IDLE_TIMEOUT || '30000'),

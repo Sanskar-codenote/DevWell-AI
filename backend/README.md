@@ -41,17 +41,19 @@ The backend service for DevWell AI, providing authentication, session management
 |----------|-------------|---------|
 | `PORT` | API server port | `3001` |
 | `JWT_SECRET` | Secret key for JWT signing | (Required) |
-| `DB_USER` | PostgreSQL user | (Required) |
-| `DB_PASSWORD` | PostgreSQL password | Required in production |
-| `DB_NAME` | PostgreSQL database name | (Required) |
-| `DB_PORT` | PostgreSQL port | `5432` |
-| `EXTENSION_ID` | Authorized extension IDs (comma-separated) | Required in production, optional in development |
+| `DATABASE_URL` | Full PostgreSQL connection string | Optional (overrides individual DB_* vars) |
+| `DB_USER` | PostgreSQL user | (Required if DATABASE_URL not set) |
+| `DB_PASSWORD` | PostgreSQL password | Required in production (if DATABASE_URL not set) |
+| `DB_NAME` | PostgreSQL database name | (Required if DATABASE_URL not set) |
+| `DB_PORT` | PostgreSQL port | `5432` (if DATABASE_URL not set) |
+| `EXTENSION_ID` | Authorized extension IDs (comma-separated) | Optional |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated list of allowed origins | (Localhost) |
 | `SMTP_HOST` | SMTP server hostname | (Optional) |
 | `SMTP_PORT` | SMTP server port | (Optional) |
 | `SMTP_USER` | SMTP authentication username | (Optional) |
 | `SMTP_PASS` | SMTP authentication password / app password | (Optional) |
 | `SMTP_FROM` | Sender email address for OTP emails | (Optional) |
+| `FRONTEND_BUILD_PATH` | Optional path to frontend production build | `../frontend/dist` |
 
 ## OTP / Email Configuration
 To enable real email delivery for signup verification codes, configure the `SMTP_*` variables in your `.env` file. If SMTP is not configured, OTPs are printed to the server console only (useful for local development).
@@ -67,10 +69,11 @@ Use `smtp.sendgrid.net:587` with `SMTP_USER=apikey` and your SendGrid API key as
 
 ## Development Note
 In production mode (`NODE_ENV=production`):
-- `EXTENSION_ID` is required.
 - `JWT_SECRET` must be at least 32 characters and must not use placeholder defaults.
-- `DB_PASSWORD` and `CORS_ALLOWED_ORIGINS` are required.
-- Extension origins are allowed only when their ID matches configured values.
+- `CORS_ALLOWED_ORIGINS` is required.
+- `DB_PASSWORD` is required when using individual DB_* variables (not needed if using `DATABASE_URL`).
+- `EXTENSION_ID` is optional. If not set, all extension origins are allowed.
+- Extension origins are allowed only when their ID matches configured values (if EXTENSION_ID is set).
 
 ## API Documentation
 See the main `README.md` in the project root for general API endpoint information.
