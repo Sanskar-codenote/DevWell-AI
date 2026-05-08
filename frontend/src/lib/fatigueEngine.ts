@@ -727,7 +727,7 @@ export class FatigueEngine {
         });
       })();
 
-      const [_, landmarker] = await Promise.all([cameraPromise, aiPromise]);
+      const [, landmarker] = await Promise.all([cameraPromise, aiPromise]);
       this.faceLandmarker = landmarker;
 
       // Request wake lock to keep the tab active
