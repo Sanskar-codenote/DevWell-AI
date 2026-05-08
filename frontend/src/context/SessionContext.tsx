@@ -3,6 +3,7 @@ import { FatigueEngine } from '../lib/fatigueEngine';
 import type { FatigueState, RestoredSessionData, SessionSummary } from '../lib/fatigueEngine';
 import api from '../lib/api';
 import { useAuth } from './AuthContext';
+import devwellLogoUrl from '../assets/devwell_ai_logo.png';
 import {
   ACTIVE_SESSION_KEY,
   SESSION_DATA_KEY,
@@ -263,7 +264,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       type === 'break';
     if (isDesktopNotificationType && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
       const title = type === 'break' ? 'DevWell AI Break Reminder' : 'DevWell AI Fatigue Alert';
-      new Notification(title, { body: message, icon: '/devwell_ai_logo.png' });
+      new Notification(title, { body: message, icon: devwellLogoUrl });
     }
 
     if (type === 'fatigue_high') {
