@@ -20,8 +20,6 @@ RUN apk add --no-cache dumb-init \
 WORKDIR /app
 
 ENV NODE_ENV=production
-# Railway provides the PORT environment variable dynamically
-ENV PORT=3001
 
 COPY --from=backend-builder --chown=appuser:appgroup /app ./
 COPY --from=frontend-builder --chown=appuser:appgroup /frontend/dist ./dist
@@ -29,7 +27,9 @@ COPY --from=frontend-builder --chown=appuser:appgroup /frontend/dist ./dist
 USER appuser
 
 # Healthcheck to ensure Railway can monitor the container
+# We use 3001 as a fallback for the healthcheck if PORT is not set, 
+# but in Railway, the PORT env var will be present.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost:${PORT}/api/health || exit 1
+  CMD wget -qO- http://localhost:${PORT:-3001}/api/health || exit 1
 
 CMD ["dumb-init", "node", "server.js"]

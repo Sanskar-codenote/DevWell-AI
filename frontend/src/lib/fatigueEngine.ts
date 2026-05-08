@@ -710,19 +710,25 @@ export class FatigueEngine {
       this.closeHiddenTrackReader();
       this.cameraStream = null;
       this.imageCapture = null;
-      const { FilesetResolver, FaceLandmarker } = await loadVisionBundle();
-      const filesetResolver = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
-      this.faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
-        baseOptions: {
-          modelAssetPath: '/mediapipe/face_landmarker.task',
-          delegate: 'CPU',
-        },
-        runningMode: 'VIDEO',
-        numFaces: 1,
-        outputFaceBlendshapes: true,
-      });
 
-      await this.startCamera();
+      // Parallelize AI loading and camera request to speed up UI response
+      const cameraPromise = this.startCamera();
+      const aiPromise = (async () => {
+        const { FilesetResolver, FaceLandmarker } = await loadVisionBundle();
+        const filesetResolver = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
+        return await FaceLandmarker.createFromOptions(filesetResolver, {
+          baseOptions: {
+            modelAssetPath: '/mediapipe/face_landmarker.task',
+            delegate: 'GPU', // Prefer GPU for much faster processing
+          },
+          runningMode: 'VIDEO',
+          numFaces: 1,
+          outputFaceBlendshapes: true,
+        });
+      })();
+
+      const [_, landmarker] = await Promise.all([cameraPromise, aiPromise]);
+      this.faceLandmarker = landmarker;
 
       // Request wake lock to keep the tab active
       await this.requestWakeLock();
