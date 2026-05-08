@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const fs = require('fs');
 const path = require('path');
 const pino = require('pino');
 require('dotenv').config();
@@ -190,17 +191,27 @@ app.get('/api/health', async (req, res) => {
 });
 
 // ─── Frontend Static Files ──────────────────────────────────────────────────
-const frontendBuildPath = process.env.FRONTEND_BUILD_PATH 
-  ? path.resolve(process.env.FRONTEND_BUILD_PATH)
-  : path.resolve(__dirname, 'dist');
-app.use(express.static(frontendBuildPath, { maxAge: '1y' }));
-logger.info({ path: frontendBuildPath }, 'Serving frontend static files');
+const frontendCandidates = [];
+if (process.env.FRONTEND_BUILD_PATH) {
+  frontendCandidates.push(path.resolve(process.env.FRONTEND_BUILD_PATH));
+}
+frontendCandidates.push(path.resolve(__dirname, 'dist'));
+frontendCandidates.push(path.resolve(__dirname, '../frontend/dist'));
+
+const frontendBuildPath = frontendCandidates.find((candidate) => fs.existsSync(candidate)) || path.resolve(__dirname, 'dist');
+const frontendExists = fs.existsSync(path.join(frontendBuildPath, 'index.html'));
+if (frontendExists) {
+  app.use(express.static(frontendBuildPath, { maxAge: '1y' }));
+  logger.info({ path: frontendBuildPath }, 'Serving frontend static files');
+} else {
+  logger.warn({ candidates: frontendCandidates }, 'Frontend build not found; API will still run but root requests will return 404');
+}
 
 // Serve index.html for all non-API routes (SPA routing)
 app.use((req, res) => {
   res.sendFile(path.join(frontendBuildPath, 'index.html'), (err) => {
     if (err) {
-      logger.warn({ url: req.url }, 'No frontend index.html found');
+      logger.warn({ url: req.url, path: frontendBuildPath }, 'No frontend index.html found');
       res.status(404).json({ error: 'Not found' });
     }
   });

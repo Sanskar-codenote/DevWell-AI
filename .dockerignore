@@ -1,0 +1,17 @@
+node_modules
+npm-debug.log
+.env
+.git
+.gitignore
+.github
+.DS_Store
+scripts
+*.md
+!README.md
+DEVWELL_TECHNICAL_REPORT.md
+.dockerignore
+docker-compose.yml
+.vscode
+.idea
+chrome-extension/dist
+chrome-extension/dist-firefox
