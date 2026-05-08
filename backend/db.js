@@ -13,16 +13,20 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   // Fall back to individual params if DATABASE_URL not set
   ...(!process.env.DATABASE_URL && {
-    user: process.env.DB_USER || 'dev16',
-    host: process.env.DB_HOST || '/var/run/postgresql',
-    database: process.env.DB_NAME || 'devwell_dev',
-    password: process.env.DB_PASSWORD || 'password',
+    user: process.env.DB_USER,
+    host: process.env.DB_HOST,
+    database: process.env.DB_NAME,
+    password: process.env.DB_PASSWORD,
     port: parseInt(process.env.DB_PORT || '5432'),
   }),
   // Production pool tuning
   max: parseInt(process.env.DB_POOL_MAX || '20'),
   idleTimeoutMillis: parseInt(process.env.DB_POOL_IDLE_TIMEOUT || '30000'),
   connectionTimeoutMillis: parseInt(process.env.DB_POOL_CONNECT_TIMEOUT || '5000'),
+  // Add SSL if DATABASE_URL contains it or in production
+  ...(process.env.NODE_ENV === 'production' && {
+    ssl: { rejectUnauthorized: false }
+  })
 });
 
 pool.on('error', (err) => {

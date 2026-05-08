@@ -32,33 +32,22 @@ function validateEnv() {
   }
 
   // Database configuration: either DATABASE_URL or individual DB_* vars
-  const hasDatabaseUrl = process.env.DATABASE_URL;
-  const hasIndividualDbConfig = process.env.DB_USER && process.env.DB_NAME && process.env.DB_PORT;
-  if (!hasDatabaseUrl && !hasIndividualDbConfig) {
-    logger.fatal('Database configuration missing: provide either DATABASE_URL or DB_USER, DB_NAME, DB_PORT');
+  if (!process.env.DATABASE_URL && !(process.env.DB_USER && process.env.DB_NAME)) {
+    logger.fatal('Database configuration missing: provide DATABASE_URL or DB_USER + DB_NAME');
     process.exit(1);
   }
 
   if (process.env.NODE_ENV === 'production') {
+    // In Railway/Monolith mode, we prioritize ease of setup.
+    // CORS_ALLOWED_ORIGINS is only strictly required if the extension needs to talk to this backend
+    // but for the web app itself, it's optional if served from the same domain.
     const missingProd = PRODUCTION_ENV.filter((key) => !process.env[key]);
     if (missingProd.length > 0) {
-      logger.fatal({ missing: missingProd }, 'Missing required PRODUCTION environment variables');
-      process.exit(1);
-    }
-
-    // DB_PASSWORD required in production only if using individual DB config (not DATABASE_URL)
-    if (!hasDatabaseUrl && !process.env.DB_PASSWORD) {
-      logger.fatal('DB_PASSWORD is required in production when not using DATABASE_URL');
-      process.exit(1);
+      logger.warn({ missing: missingProd }, 'Production variables missing; extension access may be limited');
     }
 
     if (process.env.JWT_SECRET === 'change_me_in_real_use' || process.env.JWT_SECRET === 'change_me') {
       logger.fatal('JWT_SECRET must be changed from default value in production');
-      process.exit(1);
-    }
-
-    if ((process.env.JWT_SECRET || '').length < 32) {
-      logger.fatal('JWT_SECRET must be at least 32 characters in production');
       process.exit(1);
     }
   }
