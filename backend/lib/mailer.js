@@ -8,7 +8,6 @@ function createTransporter() {
   const port = process.env.SMTP_PORT;
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
-  const from = process.env.SMTP_FROM;
 
   if (!host || !port || !user || !pass) {
     logger.warn('SMTP not fully configured. OTP emails will be logged to console only.');
@@ -20,6 +19,8 @@ function createTransporter() {
     port: parseInt(port, 10),
     secure: parseInt(port, 10) === 465,
     auth: { user, pass },
+    connectionTimeout: 5000,
+    socketTimeout: 5000,
   });
 }
 
