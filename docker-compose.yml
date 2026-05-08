@@ -38,7 +38,7 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
-      PORT: ${BACKEND_PORT}
+      PORT: 3001
       JWT_SECRET: ${JWT_SECRET}
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
@@ -56,9 +56,9 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-}
     ports:
-      - "${BACKEND_PORT}:${BACKEND_PORT}"
+      - "${BACKEND_PORT:-3001}:3001"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:${BACKEND_PORT}/api/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -81,7 +81,7 @@ services:
       backend:
         condition: service_healthy
     environment:
-      BACKEND_PORT: ${BACKEND_PORT}
+      BACKEND_PORT: 3001
     ports:
       - "${FRONTEND_PORT:-80}:80"
     healthcheck:
