@@ -67,7 +67,19 @@ const PORT = process.env.PORT || 3001;
 const frontendPort = process.env.FRONTEND_PORT || '5173';
 
 // ─── Security Middleware ────────────────────────────────────────────────────
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+      "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'", "blob:"],
+      "worker-src": ["'self'", "blob:"],
+      "connect-src": ["'self'", "https://*.railway.app"],
+      "img-src": ["'self'", "data:", "blob:"],
+      "media-src": ["'self'", "blob:", "data:"],
+    },
+  },
+  crossOriginEmbedderPolicy: false, // Required for MediaPipe WASM in some environments
+}));
 app.use(express.json({ limit: '1mb' }));
 
 // ─── CORS ───────────────────────────────────────────────────────────────────
