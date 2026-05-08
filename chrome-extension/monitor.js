@@ -12,17 +12,18 @@ const VISIBLE_FRAME_INTERVAL_MS = 100;
 const UNKNOWN_FRAME_RESET_MS = 2500;
 const BACKGROUND_SPARSE_GAP_MS = 700;
 const PERCLOS_WINDOW_MS = 60000;
-const BACKGROUND_MIN_CLOSED_SAMPLES = 3;
+const BACKGROUND_MIN_CLOSED_SAMPLES = 2;
 const DROWSY_EVENT_COOLDOWN_MS = 10000;
 const LONG_CLOSURE_WINDOW_MS = 60000;
 const MAX_VISIBLE_FRAME_GAP_MS = 450;
-const MAX_HIDDEN_FRAME_GAP_MS = 900;
+const MAX_HIDDEN_FRAME_GAP_MS = 1800;
 const MAX_METRIC_PITCH_DEG = 22;
 const MIN_METRIC_PITCH_DEG = -15;
 const LOOKING_DOWN_PITCH_DEG = 18;
 const MAX_EYE_ASYMMETRY = 0.65;
 const MIN_FACE_BBOX_AREA = 0.035;
-const HIDDEN_QUALITY_RESUME_STABLE_MS = 1800;
+const HIDDEN_QUALITY_RESUME_STABLE_MS = 800;
+const HIDDEN_POOR_QUALITY_STREAK_THRESHOLD = 3;
 
 let sessionActive = false;
 let isStarting = false;
@@ -81,6 +82,7 @@ let lowQualityStartAt = 0;
 let lastClosedSampleAt = 0;
 let freezeHiddenMetrics = false;
 let hiddenStableStartAt = 0;
+let hiddenPoorQualityStreak = 0;
 let shutdownIntervalId = null;
 let monitorClosing = false;
 
@@ -562,6 +564,7 @@ function resetSessionCounters() {
   lastClosedSampleAt = 0;
   freezeHiddenMetrics = false;
   hiddenStableStartAt = 0;
+  hiddenPoorQualityStreak = 0;
   resetClosureTracking();
 }
 
@@ -677,11 +680,15 @@ function onFaceLandmarkerResults(results) {
   if (!frameQuality.ok) {
     trackingQuality = 'poor';
     if (isBackground) {
-      freezeHiddenMetrics = true;
-      hiddenStableStartAt = 0;
-      resetClosureTracking();
+      hiddenPoorQualityStreak += 1;
+      if (hiddenPoorQualityStreak >= HIDDEN_POOR_QUALITY_STREAK_THRESHOLD) {
+        freezeHiddenMetrics = true;
+        hiddenStableStartAt = 0;
+        resetClosureTracking();
+      }
       return;
     }
+    hiddenPoorQualityStreak = 0;
     // Avoid dropping valid foreground closures on single noisy frames.
     if (lowQualityStartAt === 0) lowQualityStartAt = now;
     if (now - lowQualityStartAt >= 1200) {
@@ -691,6 +698,7 @@ function onFaceLandmarkerResults(results) {
   }
 
   if (isBackground && freezeHiddenMetrics) {
+    hiddenPoorQualityStreak = 0;
     if (hiddenStableStartAt === 0) hiddenStableStartAt = now;
     if (now - hiddenStableStartAt < HIDDEN_QUALITY_RESUME_STABLE_MS) {
       trackingQuality = 'limited';
@@ -701,6 +709,7 @@ function onFaceLandmarkerResults(results) {
   }
 
   if (!isBackground) {
+    hiddenPoorQualityStreak = 0;
     freezeHiddenMetrics = false;
     hiddenStableStartAt = 0;
   }

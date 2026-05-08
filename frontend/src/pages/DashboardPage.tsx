@@ -164,6 +164,22 @@ export default function DashboardPage() {
           </div>
         </div>
       )}
+      {extensionAvailable && state.isRunning && state.trackingQuality !== 'good' && (
+        <div className="mb-6 bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4">
+          <div className="flex items-start gap-3">
+            <div className="h-8 w-8 rounded-lg bg-amber-500/20 flex items-center justify-center shrink-0 mt-0.5">
+              <AlertTriangle className="h-4 w-4 text-amber-400" />
+            </div>
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-amber-300 mb-1">Tracking Limited In Background</h3>
+              <p className="text-xs text-amber-200/90 leading-relaxed">
+                Blink count may pause temporarily when Chrome is minimized or heavily throttled in the background.
+                Keep the monitor tab visible when possible for the most accurate counting.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {extensionAuthMismatch && (
         <div className="mb-6 bg-red-500/10 border border-red-500/20 rounded-2xl p-4">

@@ -142,17 +142,19 @@ const HIDDEN_READER_TIMEOUT_MS = 280;
 const HIDDEN_GRAB_TIMEOUT_MS = 280;
 const HIDDEN_LOOP_BACKOFF_MS = 40;
 const HIDDEN_LOOP_WATCHDOG_MS = 800;
-const BACKGROUND_MIN_CLOSED_SAMPLES = 5;
+const BACKGROUND_MIN_CLOSED_SAMPLES = 2;
 const DROWSY_EVENT_COOLDOWN_MS = 10000;
 const AUTO_PAUSE_THRESHOLD_MS = 20000; // 20 seconds of no face = auto-pause
 const AUTO_PAUSE_THRESHOLD_HIDDEN_MS = 90000; // More tolerant in hidden tabs
 const PERCLOS_WINDOW_MS = 60 * 1000; // 1 minute rolling window for PERCLOS
 const MAX_VISIBLE_FRAME_GAP_MS = 450;
-const MAX_HIDDEN_FRAME_GAP_MS = 900;
+const MAX_HIDDEN_FRAME_GAP_MS = 1800;
+const HIDDEN_POOR_QUALITY_STREAK_THRESHOLD = 3;
 const MAX_METRIC_PITCH_DEG = 22;
 const MIN_METRIC_PITCH_DEG = -15;
 const MAX_EYE_ASYMMETRY = 0.65;
 const MIN_FACE_BBOX_AREA = 0.035;
+const CLOSED_SAMPLE_STALE_RESET_MS = 600;
 
 interface NotificationSettings {
   lowFatigueThreshold: number;
@@ -218,6 +220,7 @@ export class FatigueEngine {
   private lastResultAt = 0;
   private lastHiddenDetectionAt = 0;
   private lastDrowsyEventAt = 0;
+  private lastClosedSampleAt = 0;
 
   // PERCLOS tracking
   private perclosValue = 0;
@@ -233,6 +236,7 @@ export class FatigueEngine {
   private blinkIntervals: number[] = [];
   private recentClosures: number[] = [];
   private trackingQuality: 'good' | 'limited' | 'poor' = 'good';
+  private hiddenPoorQualityStreak = 0;
 
   private processingCanvas: HTMLCanvasElement | null = null;
   private processingCtx: CanvasRenderingContext2D | null = null;
@@ -704,7 +708,9 @@ export class FatigueEngine {
       this.lastBlinkAt = 0;
       this.lastResultAt = 0;
       this.lastHiddenDetectionAt = Date.now();
+      this.hiddenPoorQualityStreak = 0;
       this.closureSampleCount = 0;
+      this.lastClosedSampleAt = 0;
       this.lastFatigueAlertAt = 0;
       this.hiddenFrameLoopActive = false;
       this.closeHiddenTrackReader();
@@ -785,6 +791,7 @@ export class FatigueEngine {
     
     if (!results.faceLandmarks || results.faceLandmarks.length === 0) {
       this.faceDetected = false;
+      this.hiddenPoorQualityStreak = 0;
       this.handleUnknownTrackingFrame(now);
       this.emitState();
       return;
@@ -854,6 +861,7 @@ export class FatigueEngine {
 
     if (this.currentState !== 'ATTENTIVE') {
       this.trackingQuality = 'limited';
+      this.hiddenPoorQualityStreak = 0;
       // 🔥 CRITICAL: wipe ALL corrupted signals
       this.resetClosureTracking();
       this.eyeClosureHistory = [];
@@ -866,16 +874,26 @@ export class FatigueEngine {
     this.unknownStateStartAt = 0;
     if (!this.evaluateFrameQuality(frameGap, isBackground, pitch, eyeBlinkLeft, eyeBlinkRight, landmarks)) {
       this.trackingQuality = 'poor';
-      this.resetClosureTracking();
+      if (isBackground) {
+        this.hiddenPoorQualityStreak += 1;
+        if (this.hiddenPoorQualityStreak >= HIDDEN_POOR_QUALITY_STREAK_THRESHOLD) {
+          this.resetClosureTracking();
+        }
+      } else {
+        this.hiddenPoorQualityStreak = 0;
+        this.resetClosureTracking();
+      }
       this.emitState();
       return;
     }
+    this.hiddenPoorQualityStreak = 0;
     this.trackingQuality = 'good';
 
     // 🔥 MUCH more stable than EAR
     const eyesCurrentlyClosed = areEyesClosed(eyeBlinkLeft, eyeBlinkRight);
 
     if (eyesCurrentlyClosed) {
+      this.lastClosedSampleAt = now;
       this.openStateStartAt = 0;
       if (!this.eyesClosed) {
         // Eyes just closed
@@ -900,6 +918,7 @@ export class FatigueEngine {
         this.drowsinessCountedForCurrentClosure = true;
       }
     } else {
+      this.lastClosedSampleAt = 0;
       // Eyes are currently open
       if (this.eyesClosed) {
         // We were previously closed, track when eyes opened
@@ -980,6 +999,13 @@ export class FatigueEngine {
   }
 
   private updatePERCLOS(now: number): void {
+    // In background/throttled mode, stale "closed" state can inflate PERCLOS.
+    // If we have not seen a recent closed sample, clear closure tracking first.
+    if (this.eyesClosed && this.lastClosedSampleAt > 0 && now - this.lastClosedSampleAt > CLOSED_SAMPLE_STALE_RESET_MS) {
+      this.resetClosureTracking();
+      this.lastClosedSampleAt = 0;
+    }
+
     const windowStart = now - PERCLOS_WINDOW_MS;
     
     // Clean up old history
@@ -1024,6 +1050,7 @@ export class FatigueEngine {
     this.closureSampleCount = 0;
     this.drowsinessCountedForCurrentClosure = false;
     this.openStateStartAt = 0;
+    this.lastClosedSampleAt = 0;
   }
 
   private handleUnknownTrackingFrame(now: number): void {
