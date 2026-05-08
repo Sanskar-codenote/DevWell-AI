@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const path = require('path');
 const pino = require('pino');
 require('dotenv').config();
 
@@ -186,6 +187,23 @@ app.get('/api/health', async (req, res) => {
 
   const statusCode = health.status === 'ok' ? 200 : 503;
   res.status(statusCode).json(health);
+});
+
+// ─── Frontend Static Files ──────────────────────────────────────────────────
+const frontendBuildPath = process.env.FRONTEND_BUILD_PATH 
+  ? path.resolve(process.env.FRONTEND_BUILD_PATH)
+  : path.resolve(__dirname, 'dist');
+app.use(express.static(frontendBuildPath, { maxAge: '1y' }));
+logger.info({ path: frontendBuildPath }, 'Serving frontend static files');
+
+// Serve index.html for all non-API routes (SPA routing)
+app.use((req, res) => {
+  res.sendFile(path.join(frontendBuildPath, 'index.html'), (err) => {
+    if (err) {
+      logger.warn({ url: req.url }, 'No frontend index.html found');
+      res.status(404).json({ error: 'Not found' });
+    }
+  });
 });
 
 // ─── Error Handler ──────────────────────────────────────────────────────────
