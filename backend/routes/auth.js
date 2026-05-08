@@ -5,6 +5,7 @@ const zod = require('zod');
 const pino = require('pino');
 const { randomInt } = require('crypto');
 const { pool } = require('../db');
+const env = require('../config/env');
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
@@ -63,12 +64,12 @@ router.post('/send-otp', async (req, res) => {
       'SELECT COUNT(*) FROM otp_codes WHERE email = $1 AND expires_at > NOW() AND used = FALSE',
       [email]
     );
-    if (parseInt(pending.rows[0].count, 10) >= 3) {
+    if (parseInt(pending.rows[0].count, 10) >= env.maxPendingOtp) {
       return res.status(429).json({ error: 'Too many verification codes sent. Please try again later.' });
     }
 
     const otp = generateOtp();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    const expiresAt = new Date(Date.now() + env.otpExpiryMinutes * 60 * 1000);
 
     await pool.query(
       'INSERT INTO otp_codes (email, code, purpose, expires_at) VALUES ($1, $2, $3, $4)',
@@ -123,7 +124,7 @@ router.post('/register', async (req, res) => {
     );
 
     const user = result.rows[0];
-    const token = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: env.jwtExpiresIn });
 
     res.status(201).json({ user: { id: user.id, email: user.email }, token });
   } catch (err) {
@@ -158,7 +159,7 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    const token = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: env.jwtExpiresIn });
 
     res.json({ user: { id: user.id, email: user.email }, token });
   } catch (err) {
@@ -209,12 +210,12 @@ router.post('/forgot-password', async (req, res) => {
       'SELECT COUNT(*) FROM otp_codes WHERE email = $1 AND purpose = $2 AND expires_at > NOW() AND used = FALSE',
       [email, 'reset_password']
     );
-    if (parseInt(pending.rows[0].count, 10) >= 3) {
+    if (parseInt(pending.rows[0].count, 10) >= env.maxPendingOtp) {
       return res.status(429).json({ error: 'Too many verification codes sent. Please try again later.' });
     }
 
     const otp = generateOtp();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    const expiresAt = new Date(Date.now() + env.otpExpiryMinutes * 60 * 1000);
 
     await pool.query(
       'INSERT INTO otp_codes (email, code, purpose, expires_at) VALUES ($1, $2, $3, $4)',

@@ -11,11 +11,12 @@ const { initDB, closePool, pool } = require('./db');
 const authRoutes = require('./routes/auth');
 const sessionsRoutes = require('./routes/sessions');
 const analyticsRoutes = require('./routes/analytics');
+const env = require('./config/env');
 
 // ─── Structured Logger ──────────────────────────────────────────────────────
 const logger = pino({
-  level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
-  ...(process.env.NODE_ENV !== 'production' && {
+  level: env.logLevel,
+  ...(env.nodeEnv !== 'production' && {
     transport: { target: 'pino-pretty', options: { colorize: true } },
   }),
 });
@@ -37,7 +38,7 @@ function validateEnv() {
     process.exit(1);
   }
 
-  if (process.env.NODE_ENV === 'production') {
+  if (env.nodeEnv === 'production') {
     // In Railway/Monolith mode, we prioritize ease of setup.
     // CORS_ALLOWED_ORIGINS is only strictly required if the extension needs to talk to this backend
     // but for the web app itself, it's optional if served from the same domain.
@@ -60,11 +61,11 @@ validateEnv();
 // ─── Express App ────────────────────────────────────────────────────────────
 const app = express();
 app.disable('x-powered-by');
-if (process.env.NODE_ENV === 'production') {
+if (env.nodeEnv === 'production') {
   app.set('trust proxy', 1);
 }
-const PORT = process.env.PORT || 3001;
-const frontendPort = process.env.FRONTEND_PORT || '5173';
+const PORT = env.port;
+const frontendPort = env.frontendPort;
 
 // ─── Security Middleware ────────────────────────────────────────────────────
 app.use(helmet({
@@ -73,7 +74,7 @@ app.use(helmet({
       ...helmet.contentSecurityPolicy.getDefaultDirectives(),
       "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'", "blob:"],
       "worker-src": ["'self'", "blob:"],
-      "connect-src": ["'self'", "https://*.railway.app"],
+      "connect-src": ["'self'", ...env.cspConnectSrc.split(',').map((item) => item.trim()).filter(Boolean)],
       "img-src": ["'self'", "data:", "blob:"],
       "media-src": ["'self'", "blob:", "data:"],
     },
@@ -89,7 +90,7 @@ const defaultAllowedOrigins = [
 ];
 
 const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS
-  ? process.env.CORS_ALLOWED_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean)
+  ? env.corsAllowedOrigins.split(',').map((origin) => origin.trim()).filter(Boolean)
   : defaultAllowedOrigins;
 
 app.use(cors({
@@ -112,7 +113,7 @@ app.use(cors({
       }
 
       // In production, require a match if EXTENSION_ID is configured
-      if (process.env.NODE_ENV === 'production' && configuredIds.length > 0) {
+      if (env.nodeEnv === 'production' && configuredIds.length > 0) {
         logger.warn({ origin, extensionId }, 'Extension request blocked — ID mismatch');
         return callback(null, false); // Return false instead of Error to avoid 500
       }
@@ -131,10 +132,10 @@ app.use(cors({
 }));
 
 // ─── Rate Limiting ──────────────────────────────────────────────────────────
-if (process.env.NODE_ENV === 'production') {
+if (env.nodeEnv === 'production') {
   const apiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 100,
+    windowMs: env.apiRateLimitWindowMinutes * 60 * 1000,
+    max: env.apiRateLimitMax,
     standardHeaders: true,
     legacyHeaders: false,
   });
@@ -142,17 +143,17 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // limit each IP to 5 requests per windowMs
-  message: { error: 'Too many requests, please try again after 15 minutes' },
+  windowMs: env.authWindowMinutes * 60 * 1000,
+  max: env.authMaxAttempts,
+  message: { error: `Too many requests, please try again after ${env.authWindowMinutes} minutes` },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 const otpLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 3, // limit each IP to 3 OTP requests per windowMs
-  message: { error: 'Too many verification requests, please try again after 15 minutes' },
+  windowMs: env.otpWindowMinutes * 60 * 1000,
+  max: env.otpMaxAttempts,
+  message: { error: `Too many verification requests, please try again after ${env.otpWindowMinutes} minutes` },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -238,7 +239,7 @@ app.use((err, req, res, next) => {
 async function start() {
   await initDB();
   const server = app.listen(PORT, () => {
-    logger.info({ port: PORT, env: process.env.NODE_ENV || 'development' }, 'DevWell API started');
+    logger.info({ port: PORT, env: env.nodeEnv }, 'DevWell API started');
   });
 
   const shutdown = async (signal) => {

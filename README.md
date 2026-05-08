@@ -45,6 +45,11 @@ The platform consists of three core components communicating securely:
 
 ## 💻 Getting Started
 
+### Configuration Quick Map
+
+- Single env template for all apps and Docker: `.env.example`
+- Structure reference: `docs/PROJECT_STRUCTURE.md`
+
 ### Prerequisites
 - **Node.js** 18+
 - **PostgreSQL** 16+
@@ -63,7 +68,7 @@ npm install -C chrome-extension
 
 ### 2. Start the Backend
 
-Create a `.env` file in the `backend/` directory:
+Copy `.env.example` to `.env` at project root and edit values:
 ```env
 PORT=3001
 FRONTEND_PORT=5173
@@ -90,7 +95,7 @@ Access the dashboard at `http://localhost:5173`.
 
 ### 4. Build and Load the Extension
 
-The browser extension is required to track your eye movements across tabs. Create a `.env` file in the `chrome-extension/` directory:
+The browser extension reads `APP_BASE_URL` and `API_BASE_URL` from the same root `.env`:
 
 ```env
 APP_BASE_URL=http://localhost:5173

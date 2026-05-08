@@ -1,6 +1,6 @@
 # ─── DevWell Production Docker Compose ─────────────────────────────────────────
 # Usage:
-#   1. cp .env.docker.example .env
+#   1. cp .env.example .env
 #   2. Fill in ALL values in .env
 #   3. docker compose up -d --build
 
@@ -30,7 +30,8 @@ services:
   backend:
     build:
       context: .
-      dockerfile: backend/Dockerfile
+      dockerfile: Dockerfile
+      target: backend-runtime
     restart: always
     depends_on:
       db:
@@ -72,7 +73,9 @@ services:
 
   frontend:
     build:
-      context: ./frontend
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-runtime
     restart: always
     depends_on:
       backend:

@@ -9,6 +9,14 @@ const logger = pino({
   }),
 });
 
+function parseBool(value, defaultValue = false) {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+}
+
+const dbSslEnabled = parseBool(process.env.DB_SSL, false);
+const dbSslRejectUnauthorized = parseBool(process.env.DB_SSL_REJECT_UNAUTHORIZED, false);
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   // Fall back to individual params if DATABASE_URL not set
@@ -23,9 +31,8 @@ const pool = new Pool({
   max: parseInt(process.env.DB_POOL_MAX || '20'),
   idleTimeoutMillis: parseInt(process.env.DB_POOL_IDLE_TIMEOUT || '30000'),
   connectionTimeoutMillis: parseInt(process.env.DB_POOL_CONNECT_TIMEOUT || '5000'),
-  // Add SSL if DATABASE_URL contains it or in production
-  ...(process.env.NODE_ENV === 'production' && {
-    ssl: { rejectUnauthorized: false }
+  ...(dbSslEnabled && {
+    ssl: { rejectUnauthorized: dbSslRejectUnauthorized }
   })
 });
 

@@ -319,7 +319,7 @@ curl -X GET http://localhost:3001/api/v1/analytics/monthly \
 
 ### 13.1 Environment
 
-Use `.env.docker.example` as base and set all required values.
+Use `.env.example` as base and set all required values.
 
 Minimum production variables:
 

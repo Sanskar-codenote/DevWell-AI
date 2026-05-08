@@ -29,7 +29,6 @@ jspm_packages/
 .env.local
 .env*.local
 !.env.example
-!.env.docker.example
 
 # OS generated files
 .DS_Store

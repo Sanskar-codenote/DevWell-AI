@@ -1,17 +1,25 @@
-node_modules
-npm-debug.log
-.env
+# VCS / editor
 .git
-.gitignore
 .github
-.DS_Store
-scripts
-*.md
-!README.md
-DEVWELL_TECHNICAL_REPORT.md
-.dockerignore
-docker-compose.yml
 .vscode
 .idea
-chrome-extension/dist
-chrome-extension/dist-firefox
+.DS_Store
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies / caches
+**/node_modules
+**/.npm
+**/.cache
+npm-debug.log*
+
+# Build artifacts
+dist
+dist-firefox
+**/dist
+**/dist-firefox
+build
+coverage
