@@ -38,6 +38,7 @@ let cameraStream = null;
 let cameraTrack = null;
 let videoElement = document.getElementById('webcam');
 let faceLandmarker = null;
+let faceLandmarkerInitPromise = null;
 let updateInterval = null;
 let rafId = null;
 let imageCapture = null;
@@ -90,6 +91,30 @@ function logMonitorError(scope, error) {
   try {
     console.warn(`[DevWell Monitor] ${scope}:`, error?.message || error);
   } catch (_) {}
+}
+
+async function ensureFaceLandmarker() {
+  if (faceLandmarker) return faceLandmarker;
+  if (!faceLandmarkerInitPromise) {
+    faceLandmarkerInitPromise = (async () => {
+      const filesetResolver = await FilesetResolver.forVisionTasks(chrome.runtime.getURL('lib/wasm'));
+      const created = await FaceLandmarker.createFromOptions(filesetResolver, {
+        baseOptions: {
+          modelAssetPath: chrome.runtime.getURL('lib/face_landmarker.task'),
+          delegate: 'CPU'
+        },
+        runningMode: 'VIDEO',
+        numFaces: 1,
+        outputFaceBlendshapes: true
+      });
+      faceLandmarker = created;
+      return created;
+    })().catch((error) => {
+      faceLandmarkerInitPromise = null;
+      throw error;
+    });
+  }
+  return faceLandmarkerInitPromise;
 }
 
 function calculateStdDev(values) {
@@ -502,24 +527,12 @@ async function startSession() {
     const settings = settingsResult.extensionSettings || settingsResult.websiteSettings || {};
     lowBlinkRate = Number(settings.lowBlinkRate || 15);
 
-    if (!faceLandmarker) {
-      const filesetResolver = await FilesetResolver.forVisionTasks(chrome.runtime.getURL('lib/wasm'));
-      faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
-        baseOptions: {
-          modelAssetPath: chrome.runtime.getURL('lib/face_landmarker.task'),
-          delegate: 'CPU'
-        },
-        runningMode: 'VIDEO',
-        numFaces: 1,
-        outputFaceBlendshapes: true
-      });
-    }
-
-    if (!isStarting) return;
-
     if (cameraStream) stopCamera();
 
-    await startCamera();
+    await Promise.all([
+      ensureFaceLandmarker(),
+      startCamera()
+    ]);
 
     if (!isStarting) {
       stopCamera();
@@ -775,7 +788,7 @@ function onFaceLandmarkerResults(results) {
 /**
  * INVINCIBLE CLEANUP - Kills media tracks and releases hardware locks
  */
-function stopSession() {
+function stopSession({ releaseModel = false } = {}) {
   if (!sessionActive && !isStarting) return;
   sessionActive = false;
   isStarting = false;
@@ -786,9 +799,10 @@ function stopSession() {
 
   stopCamera();
 
-  if (faceLandmarker) {
+  if (releaseModel && faceLandmarker) {
     try { faceLandmarker.close(); } catch (e) { logMonitorError('faceLandmarker close', e); }
     faceLandmarker = null;
+    faceLandmarkerInitPromise = null;
   }
 
   try { chrome.runtime.sendMessage({ action: 'monitorStopped', data: buildSessionData() }).catch(() => undefined); } catch (e) { logMonitorError('send monitorStopped', e); }
@@ -796,7 +810,7 @@ function stopSession() {
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.action === 'start') startSession();
-  else if (message?.action === 'stop') stopSession();
+  else if (message?.action === 'stop') stopSession({ releaseModel: false });
   else if (message?.action === 'pause') pauseSession();
   else if (message?.action === 'resume') resumeSession();
 });
@@ -834,4 +848,19 @@ shutdownIntervalId = setInterval(() => {
   }
 }, 1000);
 
-window.addEventListener('beforeunload', stopSession);
+window.addEventListener('beforeunload', () => stopSession({ releaseModel: true }));
+
+// Start model loading immediately when monitor tab is opened so startup work is
+// already in flight by the time the user starts a session.
+void ensureFaceLandmarker().catch((error) => logMonitorError('model preload', error));
+
+// When the monitor tab is opened from website/popup start, begin immediately
+// without waiting for an additional background -> tab message roundtrip.
+try {
+  const autostart = new URLSearchParams(window.location.search).get('autostart');
+  if (autostart === '1') {
+    void startSession();
+  }
+} catch (error) {
+  logMonitorError('autostart parse', error);
+}

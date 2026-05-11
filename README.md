@@ -50,6 +50,12 @@ The platform consists of three core components communicating securely:
 - Single env template for all apps and Docker: `.env.example`
 - Structure reference: `docs/PROJECT_STRUCTURE.md`
 
+### Run Modes
+
+- Local dev (recommended for development): run backend + frontend separately (`npm start` in `backend`, `npm run dev` in `frontend`).
+- Local Docker multi-service: run `docker compose up -d --build` (frontend nginx + backend + postgres).
+- Railway single-service deployment: uses the default `Dockerfile` final stage (`backend-runtime`) and serves API + built frontend from one container.
+
 ### Prerequisites
 - **Node.js** 18+
 - **PostgreSQL** 16+
@@ -92,6 +98,21 @@ cd frontend
 npm run dev
 ```
 Access the dashboard at `http://localhost:5173`.
+
+### 3.1 Docker Compose (Local Full Stack)
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
+
+Access app at `http://localhost:${FRONTEND_PORT}` (default `http://localhost:5173`).
+
+### 3.2 Railway (Single Service)
+
+- This repo is configured so Railway builds/runs the `backend-runtime` stage by default.
+- The backend serves both API and frontend static files.
+- Railway injects `PORT` automatically; do not hardcode a fixed external port there.
 
 ### 4. Build and Load the Extension
 

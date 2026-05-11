@@ -116,20 +116,9 @@ Level thresholds:
 - `> 40`: Moderate Fatigue
 - else: Fresh
 
-### 6.2 Final Session Summary Score (`stop()` path)
+### 6.2 Session Stop Behavior
 
-When a session stops, returned summary uses a separate simplified formula:
-
-| Factor | Logic |
-|---|---|
-| Blink deficit | `0` if session `< 1 min`; else `max(0, (lowBlinkRate - currentBlinkRate)/lowBlinkRate) * 30` |
-| PERCLOS weight | `(perclos / 25) * 40` |
-| Acute closures | `min(longClosureEvents * 5, 20)` |
-| Closure penalty | `min(perclosWeight + acuteClosureWeight, 80)` |
-| Duration penalty | `min(max(sessionMinutes - 3, 0) / 120 * 20, 20)` |
-| Final score | `clamp(blinkDeficit + closurePenalty + durationPenalty, 0, 100)`, then rounded |
-
-Level thresholds are the same (`>70`, `>40`).
+On stop, monitor returns `buildSessionData()` and uses the same live fatigue-score pipeline described in 6.1 (including confidence gating and smoothing state), not a separate simplified formula path.
 
 ## 7. Background, Minimized, and Overlapped Runtime
 
@@ -151,14 +140,14 @@ Additional hardening now active in extension monitor:
 - Frame quality gate (pose, asymmetry, face area, cadence) blocks polluted updates
 - Hidden/overlap freeze gate:
   - immediately freezes blink/PERCLOS/drowsy accumulation on hidden low-quality frames
-  - resumes only after `~1.8s` of stable hidden quality
+  - resumes only after `~0.8s` (`HIDDEN_QUALITY_RESUME_STABLE_MS=800`) of stable hidden quality
 - Background counting constraints:
   - background blink/closure classification requires minimum closed-sample counts
   - long-closure event cooldown (`10s`) prevents burst overcounting
 - Stale-closure breaker:
   - if no fresh closed-eye evidence for `~600ms`, active closure state is force-cleared to prevent one-way PERCLOS drift
 
-## 13. Extension Reliability Hardening (May 2026)
+## 8. Extension Reliability Hardening (May 2026)
 
 This session introduced targeted extension reliability updates:
 
@@ -176,7 +165,7 @@ This session introduced targeted extension reliability updates:
    - safe shutdown guard to prevent repeated close-loop churn
 6. Normalized looking-down state thresholds so attention-state logic and gating are consistent.
 
-## 8. Session Controls and Time Accounting
+## 9. Session Controls and Time Accounting
 
 - Manual pause: camera stops, wake lock released, active-time accumulation paused
 - Auto-pause:
@@ -185,9 +174,9 @@ This session introduced targeted extension reliability updates:
 - Auto-resume: resumes on detected face when paused automatically
 - Session duration metrics subtract total paused time
 
-## 9. Data Model (PostgreSQL)
+## 10. Data Model (PostgreSQL)
 
-### 9.1 `users`
+### 10.1 `users`
 
 - `id` (PK)
 - `email` (unique)
@@ -195,7 +184,7 @@ This session introduced targeted extension reliability updates:
 - `created_at`
 - `updated_at`
 
-### 9.2 `sessions`
+### 10.2 `sessions`
 
 - `id` (PK)
 - `user_id` (FK -> users.id)
@@ -207,7 +196,7 @@ This session introduced targeted extension reliability updates:
 - `created_at`
 - `updated_at`
 
-### 9.3 `otp_codes`
+### 10.3 `otp_codes`
 
 - `id` (PK)
 - `email`
@@ -217,7 +206,7 @@ This session introduced targeted extension reliability updates:
 - `used`
 - `created_at`
 
-## 10. Backend Security and Production Controls
+## 11. Backend Security and Production Controls
 
 Implemented:
 
@@ -232,10 +221,10 @@ Production checks enforced:
 
 - `JWT_SECRET` required, non-placeholder, min length 32
 - `DB_PASSWORD` required
-- `CORS_ALLOWED_ORIGINS` required
-- `EXTENSION_ID` required
+- `CORS_ALLOWED_ORIGINS` recommended for explicit allowlist control (warned when missing)
+- `EXTENSION_ID` optional (if set, extension origin must match configured IDs)
 
-## 11. Browser Compatibility
+## 12. Browser Compatibility
 
 Supported:
 
@@ -246,7 +235,7 @@ Not targeted for extension parity:
 
 - Safari / iOS
 
-## 12. API Reference (Current)
+## 13. API Reference (Current)
 
 Base path: `/api/v1`
 
@@ -315,11 +304,16 @@ curl -X GET http://localhost:3001/api/v1/analytics/monthly \
   -H "Authorization: Bearer <token>"
 ```
 
-## 13. Docker and Operations
+## 14. Docker and Operations
 
 ### 13.1 Environment
 
 Use `.env.example` as base and set all required values.
+
+Deployment modes:
+
+- Single-service mode (Railway): run the default `Dockerfile` final stage (`backend-runtime`). This serves API + frontend from one container.
+- Multi-service mode (Docker Compose): run `db` + `backend` + `frontend` as separate containers via `docker-compose.yml`.
 
 Minimum production variables:
 
@@ -350,7 +344,7 @@ docker compose down
 docker compose down -v  # destroys DB volume
 ```
 
-## 14. Privacy Guarantees
+## 15. Privacy Guarantees
 
 - Face processing is local to the device
 - Camera frames are not sent to backend

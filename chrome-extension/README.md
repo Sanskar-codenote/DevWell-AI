@@ -12,7 +12,7 @@ A Manifest V3 browser extension that provides real-time developer wellness monit
 ## Setup & Installation
 
 1.  **Configure environment**:
-    Create a `.env` file in the `chrome-extension/` directory:
+    Set `APP_BASE_URL` and `API_BASE_URL` in the repo root `.env` (recommended, shared with other apps), or in `chrome-extension/.env`:
     ```env
     APP_BASE_URL=http://localhost:5173
     API_BASE_URL=http://localhost:3001

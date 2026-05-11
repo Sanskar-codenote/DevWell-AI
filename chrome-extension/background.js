@@ -309,7 +309,7 @@ class DevWellBackground {
     }
   }
 
-  async finalizeSession(finalData, { reason = 'Session ended' } = {}) {
+  async finalizeSession(finalData, { reason = 'Session ended', keepMonitorTabOpen = false } = {}) {
     if (this.isFinalizingSession) {
       return { success: true };
     }
@@ -325,7 +325,9 @@ class DevWellBackground {
       this.lastBreakReminderBucket = 0;
 
       const sessionSnapshot = finalData ?? this.sessionData;
-      await this.closeMonitorTab();
+      if (!keepMonitorTabOpen) {
+        await this.closeMonitorTab();
+      }
 
       const details = this.formatSessionDetails(sessionSnapshot);
       
@@ -350,12 +352,14 @@ class DevWellBackground {
       }
 
       this.sessionData = null;
-      this.monitorTabId = null;
+      if (!keepMonitorTabOpen) {
+        this.monitorTabId = null;
+      }
       await chrome.storage.local.set({
         sessionActive: false,
         sessionData: null,
         sessionError: null,
-        monitorTabId: null
+        monitorTabId: keepMonitorTabOpen ? this.monitorTabId : null
       });
 
       this.updateBadge();
@@ -382,27 +386,23 @@ class DevWellBackground {
           }
         }
         if (this.monitorTabId) {
-            try { // Focus existing tab
+            try {
                 await chrome.tabs.update(this.monitorTabId, { active: true, autoDiscardable: false });
+                await chrome.tabs.sendMessage(this.monitorTabId, { action: 'start' }).catch(() => undefined);
                 return { success: true };
-            } catch { /* tab doesn't exist, proceed to create */ }
+            } catch {
+              this.monitorTabId = null;
+            }
         }
         await chrome.storage.local.set({ sessionError: null });
-        
-        const tab = await chrome.tabs.create({ url: chrome.runtime.getURL(MONITOR_URL), pinned: true });
+
+        const autostartUrl = `${chrome.runtime.getURL(MONITOR_URL)}?autostart=1`;
+        const tab = await chrome.tabs.create({ url: autostartUrl, pinned: true });
         this.monitorTabId = tab.id;
         if (this.monitorTabId) {
           await chrome.tabs.update(this.monitorTabId, { autoDiscardable: false }).catch(() => undefined);
         }
-        
-        const startListener = (tabId, changeInfo) => {
-          if (tabId === this.monitorTabId && changeInfo.status === 'complete') {
-            chrome.tabs.sendMessage(tabId, { action: 'start' }).catch(e => console.log('Error sending start message to monitor tab.', e));
-            chrome.tabs.onUpdated.removeListener(startListener);
-          }
-        };
-        chrome.tabs.onUpdated.addListener(startListener);
-        
+
         await chrome.storage.local.set({ monitorTabId: this.monitorTabId });
         return { success: true };
 
@@ -413,7 +413,10 @@ class DevWellBackground {
             console.log('[DevWell Background] Monitor tab might already be closing.', e);
           });
         }
-        return this.finalizeSession(this.sessionData, { reason: 'Session stopped from extension popup' });
+        return this.finalizeSession(this.sessionData, {
+          reason: 'Session stopped from extension popup',
+          keepMonitorTabOpen: true,
+        });
 
       case 'requestPauseSession':
         if (this.monitorTabId) {
@@ -465,7 +468,10 @@ class DevWellBackground {
         return { success: true };
 
       case 'monitorStopped':
-        return this.finalizeSession(message.data ?? this.sessionData, { reason: 'Session stopped by monitor' });
+        return this.finalizeSession(message.data ?? this.sessionData, {
+          reason: 'Session stopped by monitor',
+          keepMonitorTabOpen: true,
+        });
 
       case 'monitorError':
         this.sessionActive = false;
