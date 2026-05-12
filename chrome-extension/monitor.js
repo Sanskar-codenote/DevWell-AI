@@ -4,6 +4,7 @@ const BLINK_MIN_MS = 35;
 const DROWSINESS_THRESHOLD_MS = 1500;
 const BLINK_REFRACTORY_MS = 80;
 const REOPEN_STABILITY_MS = 90;
+const BACKGROUND_REOPEN_STABILITY_MS = 140;
 const HIDDEN_READER_TIMEOUT_MS = 280;
 const HIDDEN_GRAB_TIMEOUT_MS = 280;
 const HIDDEN_LOOP_INTERVAL_MS = 150; 
@@ -12,7 +13,7 @@ const VISIBLE_FRAME_INTERVAL_MS = 100;
 const UNKNOWN_FRAME_RESET_MS = 2500;
 const BACKGROUND_SPARSE_GAP_MS = 700;
 const PERCLOS_WINDOW_MS = 60000;
-const BACKGROUND_MIN_CLOSED_SAMPLES = 2;
+const BACKGROUND_MIN_CLOSED_SAMPLES = 4;
 const DROWSY_EVENT_COOLDOWN_MS = 10000;
 const LONG_CLOSURE_WINDOW_MS = 60000;
 const MAX_VISIBLE_FRAME_GAP_MS = 450;
@@ -20,10 +21,11 @@ const MAX_HIDDEN_FRAME_GAP_MS = 1800;
 const MAX_METRIC_PITCH_DEG = 22;
 const MIN_METRIC_PITCH_DEG = -15;
 const LOOKING_DOWN_PITCH_DEG = 18;
+const HIDDEN_LOOKING_DOWN_PITCH_DEG = 12;
 const MAX_EYE_ASYMMETRY = 0.65;
 const MIN_FACE_BBOX_AREA = 0.035;
 const HIDDEN_QUALITY_RESUME_STABLE_MS = 800;
-const HIDDEN_POOR_QUALITY_STREAK_THRESHOLD = 3;
+const HIDDEN_POOR_QUALITY_STREAK_THRESHOLD = 1;
 
 let sessionActive = false;
 let isStarting = false;
@@ -184,6 +186,9 @@ function evaluateFrameQuality({ frameGap, isBackground, pitch, eyeBlinkLeft, eye
 
   if (!Number.isFinite(pitch) || pitch > MAX_METRIC_PITCH_DEG || pitch < MIN_METRIC_PITCH_DEG) {
     return { ok: false, reason: 'pose' };
+  }
+  if (isBackground && pitch > HIDDEN_LOOKING_DOWN_PITCH_DEG) {
+    return { ok: false, reason: 'hidden_looking_down' };
   }
 
   if (Math.abs(eyeBlinkLeft - eyeBlinkRight) > MAX_EYE_ASYMMETRY) {
@@ -745,7 +750,8 @@ function onFaceLandmarkerResults(results) {
   } else if (!eyesCurrentlyClosed && eyesClosed) {
     lastClosedSampleAt = 0;
     if (openStateStartAt === 0) openStateStartAt = now;
-    const stableEnough = (now - openStateStartAt >= REOPEN_STABILITY_MS) || isBackground;
+    const requiredReopenStabilityMs = isBackground ? BACKGROUND_REOPEN_STABILITY_MS : REOPEN_STABILITY_MS;
+    const stableEnough = now - openStateStartAt >= requiredReopenStabilityMs;
     
     if (stableEnough) {
       const closedDuration = openStateStartAt - eyeClosedStart;

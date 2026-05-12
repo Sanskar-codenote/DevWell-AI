@@ -75,6 +75,10 @@ interface SessionCommand {
   issuedAt: number;
 }
 
+interface StartOwnedSessionOptions {
+  userInitiated?: boolean;
+}
+
 interface SessionContextType {
   state: FatigueState;
   alerts: Alert[];
@@ -317,7 +321,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setIsSessionOwner(false);
   }, []);
 
-  const startOwnedSession = useCallback(async (restoredData?: RestoredSessionData) => {
+  const startOwnedSession = useCallback(async (restoredData?: RestoredSessionData, options: StartOwnedSessionOptions = {}) => {
+    const { userInitiated = false } = options;
     setSessionSummary(null);
     setAlerts([]);
     setIsStarting(true);
@@ -339,6 +344,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       await Notification.requestPermission();
     }
 
+    if (!userInitiated && typeof navigator !== 'undefined' && 'permissions' in navigator) {
+      try {
+        const permissionStatus = await navigator.permissions.query({ name: 'camera' as PermissionName });
+        if (permissionStatus.state !== 'granted') {
+          clearTimeout(timeoutId);
+          setIsStarting(false);
+          releaseOwnership();
+          return false;
+        }
+      } catch {
+        // Ignore permissions API failures and fall back to getUserMedia.
+      }
+    }
+
     try {
       const engine = new FatigueEngine(setState, handleAlert);
       engineRef.current = engine;
@@ -354,6 +373,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       clearTimeout(timeoutId);
       engineRef.current = null;
+      setIsStarting(false);
       releaseOwnership();
       handleAlert('error', getErrorMessage(error, 'Failed to start webcam. Please check camera permissions.'));
       return false;
@@ -483,7 +503,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     const snapshot = readJson<SharedSessionSnapshot>(SHARED_SESSION_KEY);
     const restoredData = snapshot?.restoredData ?? readJson<RestoredSessionData>(SESSION_DATA_KEY) ?? undefined;
-    const success = await startOwnedSession(restoredData);
+    const success = await startOwnedSession(restoredData, { userInitiated: true });
     
     // Sync stream to visible video element if provided
     if (success && visibleVideoEl && videoRef.current?.srcObject) {
@@ -636,7 +656,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
       takeoverInFlightRef.current = true;
       handleAlert('info', 'This tab is resuming your active session...');
-      void startOwnedSession(snapshot.restoredData).finally(() => {
+      void startOwnedSession(snapshot.restoredData, { userInitiated: false }).finally(() => {
         takeoverInFlightRef.current = false;
       });
     }, 2000);

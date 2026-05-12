@@ -138,20 +138,23 @@ const DEFAULT_LOW_BLINK_RATE = 15;
 const BREAK_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
 const UNKNOWN_FRAME_RESET_MS = 2500;
 const REOPEN_STABILITY_MS = 90;
+const BACKGROUND_REOPEN_STABILITY_MS = 140;
 const HIDDEN_READER_TIMEOUT_MS = 280;
 const HIDDEN_GRAB_TIMEOUT_MS = 280;
 const HIDDEN_LOOP_BACKOFF_MS = 40;
 const HIDDEN_LOOP_WATCHDOG_MS = 800;
-const BACKGROUND_MIN_CLOSED_SAMPLES = 2;
+const BACKGROUND_MIN_CLOSED_SAMPLES = 4;
 const DROWSY_EVENT_COOLDOWN_MS = 10000;
 const AUTO_PAUSE_THRESHOLD_MS = 20000; // 20 seconds of no face = auto-pause
 const AUTO_PAUSE_THRESHOLD_HIDDEN_MS = 90000; // More tolerant in hidden tabs
 const PERCLOS_WINDOW_MS = 60 * 1000; // 1 minute rolling window for PERCLOS
 const MAX_VISIBLE_FRAME_GAP_MS = 450;
 const MAX_HIDDEN_FRAME_GAP_MS = 1800;
-const HIDDEN_POOR_QUALITY_STREAK_THRESHOLD = 3;
+const HIDDEN_POOR_QUALITY_STREAK_THRESHOLD = 1;
 const MAX_METRIC_PITCH_DEG = 22;
 const MIN_METRIC_PITCH_DEG = -15;
+const LOOKING_DOWN_PITCH_DEG = 18;
+const HIDDEN_LOOKING_DOWN_PITCH_DEG = 12;
 const MAX_EYE_ASYMMETRY = 0.65;
 const MIN_FACE_BBOX_AREA = 0.035;
 const CLOSED_SAMPLE_STALE_RESET_MS = 600;
@@ -320,6 +323,7 @@ export class FatigueEngine {
     if (frameGap > 0 && frameGap > maxFrameGap) return false;
 
     if (!Number.isFinite(pitch) || pitch > MAX_METRIC_PITCH_DEG || pitch < MIN_METRIC_PITCH_DEG) return false;
+    if (isBackground && pitch > HIDDEN_LOOKING_DOWN_PITCH_DEG) return false;
     if (Math.abs(eyeBlinkLeft - eyeBlinkRight) > MAX_EYE_ASYMMETRY) return false;
 
     const faceArea = this.getFaceBoundingBoxArea(landmarks);
@@ -842,7 +846,7 @@ export class FatigueEngine {
 
     if (!this.faceDetected) {
       nextState = 'FACE_LOST';
-    } else if (pitch > 25) {
+    } else if (pitch > LOOKING_DOWN_PITCH_DEG) {
       nextState = 'LOOKING_DOWN';
     }
 
@@ -928,7 +932,8 @@ export class FatigueEngine {
 
         // Wait for reopen stability before classifying the closure event
         const timeSinceOpen = now - this.openStateStartAt;
-        if (timeSinceOpen < REOPEN_STABILITY_MS && !isBackground) {
+        const requiredReopenStabilityMs = isBackground ? BACKGROUND_REOPEN_STABILITY_MS : REOPEN_STABILITY_MS;
+        if (timeSinceOpen < requiredReopenStabilityMs) {
           // Still waiting for stability, just emit state and continue tracking
           this.updatePERCLOS(now);
           this.emitState();
